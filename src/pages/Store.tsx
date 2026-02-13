@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import clsx from "clsx";
-import { CheckCircle2, Loader2, Search, ShieldCheck } from "lucide-react";
+import { CheckCircle2, ExternalLink, Loader2, Search, ShieldCheck } from "lucide-react";
 import {
   getIntegrations,
   getIntegrationsCached,
@@ -66,33 +66,6 @@ type ClawhubInstallResult = {
   message?: string;
   installed_skill_id?: string;
 };
-
-type ClawhubCatalogSkill = {
-  slug: string;
-  display_name: string;
-  summary: string;
-  latest_version?: string | null;
-  downloads: number;
-  installs_all_time: number;
-  stars: number;
-  updated_at?: number | null;
-};
-
-type ClawhubSkillDetails = {
-  slug: string;
-  display_name: string;
-  summary: string;
-  latest_version?: string | null;
-  changelog?: string | null;
-  owner_handle?: string | null;
-  owner_display_name?: string | null;
-  downloads: number;
-  installs_all_time: number;
-  stars: number;
-  updated_at?: number | null;
-};
-
-type ClawhubSort = "stars" | "downloads" | "installs" | "newest";
 
 const GoogleCalendarIcon = ({ className }: { className?: string }) => (
   <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
@@ -215,7 +188,6 @@ const MESSAGING_PLUGIN_IDS = new Set([
   "slack",
   "googlechat",
 ]);
-const HIDDEN_PLUGIN_IDS = new Set(["matrix", "mstreams"]);
 
 const CATEGORIES = [
   { id: "all", label: "All" },
@@ -271,20 +243,11 @@ export function Store({
   const [scanError, setScanError] = useState<string | null>(null);
   const [scanIntent, setScanIntent] = useState<ScanIntent>("plugin-enable");
   const [scanTargetName, setScanTargetName] = useState("");
+  const [clawhubSlug, setClawhubSlug] = useState("");
   const [clawhubBusy, setClawhubBusy] = useState(false);
-  const [clawhubBusySlug, setClawhubBusySlug] = useState<string | null>(null);
   const [clawhubError, setClawhubError] = useState<string | null>(null);
   const [pendingUnsafeSlug, setPendingUnsafeSlug] = useState<string | null>(null);
   const [skillQuery, setSkillQuery] = useState("");
-  const [clawhubSort, setClawhubSort] = useState<ClawhubSort>("stars");
-  const [clawhubCatalog, setClawhubCatalog] = useState<ClawhubCatalogSkill[]>([]);
-  const [clawhubLoading, setClawhubLoading] = useState(false);
-  const [clawhubLookupError, setClawhubLookupError] = useState<string | null>(null);
-  const [expandedClawhubSlug, setExpandedClawhubSlug] = useState<string | null>(null);
-  const [clawhubDetails, setClawhubDetails] = useState<Record<string, ClawhubSkillDetails>>({});
-  const [clawhubDetailLoading, setClawhubDetailLoading] = useState<string | null>(null);
-  const [clawhubDetailError, setClawhubDetailError] = useState<string | null>(null);
-  const [removingSkill, setRemovingSkill] = useState<string | null>(null);
   const [skillScanResults, setSkillScanResults] = useState<Record<string, PluginScanResult>>({});
   const syncedIntegrationsRef = useRef<Set<string>>(new Set());
 
@@ -292,7 +255,6 @@ export function Store({
     refreshPlugins();
     refreshIntegrations();
     refreshSkills();
-    refreshClawhubCatalog({ silent: true });
   }, []);
 
   useEffect(() => {
@@ -343,47 +305,6 @@ export function Store({
       console.error("Failed to load skills:", err);
     } finally {
       setSkillsLoading(false);
-    }
-  }
-
-  async function refreshClawhubCatalog(opts?: { silent?: boolean }) {
-    if (!opts?.silent) {
-      setClawhubLoading(true);
-    }
-    setClawhubLookupError(null);
-    try {
-      const fetchSort =
-        clawhubSort === "newest"
-          ? "newest"
-          : clawhubSort === "downloads"
-            ? "downloads"
-            : clawhubSort === "installs"
-              ? "installsAllTime"
-              : "rating";
-      const list = await invoke<ClawhubCatalogSkill[]>("get_clawhub_catalog", {
-        query: skillQuery.trim() || null,
-        limit: 60,
-        sort: fetchSort,
-      });
-      const sorted = [...list].sort((a, b) => {
-        if (clawhubSort === "newest") {
-          return (b.updated_at || 0) - (a.updated_at || 0);
-        }
-        if (clawhubSort === "downloads") {
-          return b.downloads - a.downloads;
-        }
-        if (clawhubSort === "installs") {
-          return b.installs_all_time - a.installs_all_time;
-        }
-        return b.stars - a.stars;
-      });
-      setClawhubCatalog(sorted);
-    } catch (err) {
-      const message = String(err);
-      setClawhubLookupError(message);
-      console.error("Failed to load ClawHub catalog:", err);
-    } finally {
-      setClawhubLoading(false);
     }
   }
 
@@ -484,7 +405,7 @@ export function Store({
 
   const pluginsSansNovaX = useMemo(() => plugins.filter((p) => p.id !== NOVA_X_SKILL_ID), [plugins]);
   const visiblePlugins = useMemo(
-    () => pluginsSansNovaX.filter((p) => !MESSAGING_PLUGIN_IDS.has(p.id) && !HIDDEN_PLUGIN_IDS.has(p.id)),
+    () => pluginsSansNovaX.filter((p) => !MESSAGING_PLUGIN_IDS.has(p.id)),
     [pluginsSansNovaX]
   );
 
@@ -508,7 +429,7 @@ export function Store({
   const xIntegration = useMemo(() => integrations.find((i) => i.provider === "x"), [integrations]);
   const xConnected = !!xIntegration && !xIntegration.stale;
 
-  const installedSkillCards = useMemo(() => {
+  const skillCards = useMemo(() => {
     const cards: SkillCard[] = [
       {
         id: NOVA_X_SKILL_ID,
@@ -533,24 +454,12 @@ export function Store({
     ];
 
     const needle = skillQuery.trim().toLowerCase();
-    const filtered = !needle ? cards : cards.filter((skill) => {
+    if (!needle) return cards;
+    return cards.filter((skill) => {
       const haystack = [skill.name, skill.description, skill.sourceLabel, ...skill.tags].join(" ").toLowerCase();
       return haystack.includes(needle);
     });
-
-    const managed = filtered
-      .filter((skill) => skill.managed)
-      .sort((a, b) => a.name.localeCompare(b.name));
-    const others = filtered
-      .filter((skill) => !skill.managed)
-      .sort((a, b) => a.name.localeCompare(b.name));
-    return [...managed, ...others];
   }, [workspaceSkills, skillQuery, xConnected]);
-
-  const installedWorkspaceSkillIds = useMemo(
-    () => new Set(workspaceSkills.map((skill) => skill.id)),
-    [workspaceSkills]
-  );
 
   async function beginSecurityScan(params: {
     intent: ScanIntent;
@@ -667,35 +576,34 @@ export function Store({
     }
   }
 
-  async function scanInstallSkillFromClawhub(slug: string, allowUnsafe: boolean) {
-    const normalizedSlug = slug.trim();
-    if (!normalizedSlug) return;
+  async function scanInstallSkillFromClawhub(allowUnsafe: boolean) {
+    const slug = clawhubSlug.trim();
+    if (!slug) return;
 
     setClawhubBusy(true);
-    setClawhubBusySlug(normalizedSlug);
     setClawhubError(null);
     setPendingUnsafeSlug(null);
 
     try {
       const result = await invoke<ClawhubInstallResult>("scan_and_install_clawhub_skill", {
-        slug: normalizedSlug,
+        slug,
         allowUnsafe,
       });
       setScanIntent("skill-audit");
-      setScanTargetName(normalizedSlug);
+      setScanTargetName(slug);
       setScanPluginId(null);
       setScanResult(result.scan);
       setScanError(null);
       setScanModalOpen(true);
-      setSkillScanResults((prev) => ({ ...prev, [result.installed_skill_id || normalizedSlug]: result.scan }));
+      setSkillScanResults((prev) => ({ ...prev, [result.installed_skill_id || slug]: result.scan }));
       if (result.blocked && !allowUnsafe) {
-        setPendingUnsafeSlug(normalizedSlug);
+        setPendingUnsafeSlug(slug);
       } else {
         setPendingUnsafeSlug(null);
       }
       if (result.installed) {
+        setClawhubSlug("");
         await refreshSkills();
-        await refreshClawhubCatalog({ silent: true });
       } else if (result.message) {
         setClawhubError(result.message);
       }
@@ -706,57 +614,6 @@ export function Store({
       setScanModalOpen(true);
     } finally {
       setClawhubBusy(false);
-      setClawhubBusySlug(null);
-    }
-  }
-
-  async function handleRemoveWorkspaceSkill(skillId: string) {
-    const confirmed = window.confirm(`Remove "${skillId}" from installed skills?`);
-    if (!confirmed) return;
-
-    setRemovingSkill(skillId);
-    setSkillsError(null);
-    try {
-      await invoke("remove_workspace_skill", { id: skillId });
-      setSkillScanResults((prev) => {
-        const next = { ...prev };
-        delete next[skillId];
-        return next;
-      });
-      await refreshSkills();
-      await refreshClawhubCatalog({ silent: true });
-    } catch (err) {
-      const message = String(err);
-      setSkillsError(message);
-      console.error("Failed to remove skill:", err);
-    } finally {
-      setRemovingSkill(null);
-    }
-  }
-
-  async function toggleClawhubDetails(slug: string) {
-    if (expandedClawhubSlug === slug) {
-      setExpandedClawhubSlug(null);
-      setClawhubDetailError(null);
-      return;
-    }
-    setExpandedClawhubSlug(slug);
-    setClawhubDetailError(null);
-
-    if (clawhubDetails[slug]) {
-      return;
-    }
-
-    setClawhubDetailLoading(slug);
-    try {
-      const detail = await invoke<ClawhubSkillDetails>("get_clawhub_skill_details", { slug });
-      setClawhubDetails((prev) => ({ ...prev, [slug]: detail }));
-    } catch (err) {
-      const message = String(err);
-      setClawhubDetailError(message);
-      console.error("Failed to load ClawHub skill details:", err);
-    } finally {
-      setClawhubDetailLoading(null);
     }
   }
 
@@ -791,6 +648,22 @@ export function Store({
 
       {activeTab === "plugins" && (
         <>
+          <div className="mb-6 rounded-2xl border border-[var(--border-subtle)] bg-[var(--system-gray-6)]/60 p-4">
+            <p className="text-sm font-semibold text-[var(--text-primary)]">Messaging channels moved to Messaging</p>
+            <p className="mt-1 text-xs text-[var(--text-secondary)]">
+              Discord, Telegram, Slack, Google Chat, WhatsApp, and iMessage setup is now handled in one place under Messaging.
+            </p>
+            {onNavigate && (
+              <button
+                onClick={() => onNavigate("channels")}
+                className="mt-2 inline-flex items-center gap-1 text-xs text-[var(--system-blue)] font-semibold hover:underline"
+              >
+                Open Messaging
+                <ExternalLink className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
           <div className="flex gap-3 mb-8 overflow-x-auto pb-2 scrollbar-hide">
             {CATEGORIES.map((cat) => (
               <button
@@ -939,6 +812,55 @@ export function Store({
 
       {activeTab === "skills" && (
         <>
+          <div className="mb-8 bg-white rounded-2xl border border-[var(--border-subtle)] p-5">
+            <div className="flex flex-col lg:flex-row lg:items-end gap-4">
+              <div className="flex-1">
+                <p className="text-xs uppercase tracking-wide text-[var(--text-tertiary)] mb-2">Skill Lookup</p>
+                <div className="relative">
+                  <Search className="w-4 h-4 text-[var(--text-tertiary)] absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    value={skillQuery}
+                    onChange={(e) => setSkillQuery(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 rounded-lg border border-[var(--border-subtle)] bg-white text-sm"
+                    placeholder="Search local skills by name, source, or tag"
+                  />
+                </div>
+              </div>
+              <a
+                href={`https://clawhub.ai/skills${skillQuery.trim() ? `?q=${encodeURIComponent(skillQuery.trim())}` : ""}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-black text-white text-sm font-semibold hover:bg-gray-800"
+              >
+                Browse ClawHub
+                <ExternalLink className="w-4 h-4" />
+              </a>
+            </div>
+          </div>
+
+          <div className="mb-10 bg-white rounded-2xl border border-[var(--border-subtle)] p-5">
+            <p className="text-xs uppercase tracking-wide text-[var(--text-tertiary)] mb-2">Install From ClawHub</p>
+            <div className="flex flex-col md:flex-row gap-3">
+              <input
+                value={clawhubSlug}
+                onChange={(e) => setClawhubSlug(e.target.value)}
+                className="flex-1 px-3 py-2 rounded-lg border border-[var(--border-subtle)] bg-white text-sm"
+                placeholder="Skill slug (example: homeassistant)"
+              />
+              <button
+                onClick={() => scanInstallSkillFromClawhub(false)}
+                disabled={clawhubBusy || clawhubSlug.trim().length === 0}
+                className="px-4 py-2 rounded-lg bg-[var(--system-blue)] text-white text-sm font-semibold disabled:opacity-60"
+              >
+                {clawhubBusy ? "Scanning..." : "Scan + Install"}
+              </button>
+            </div>
+            <p className="text-xs text-[var(--text-secondary)] mt-2">
+              Nova scans the downloaded skill before install and blocks high-severity findings unless you explicitly override.
+            </p>
+            {clawhubError && <p className="text-xs text-red-600 mt-2">{clawhubError}</p>}
+          </div>
+
           {skillsLoading && (
             <div className="py-8 text-sm text-[var(--text-secondary)] flex items-center gap-2">
               <Loader2 className="w-4 h-4 animate-spin" />
@@ -953,234 +875,83 @@ export function Store({
           )}
 
           {!skillsLoading && (
-            <div>
-              <h2 className="text-xl font-bold text-[var(--text-primary)] mb-4">Installed Skills</h2>
-              <div className="space-y-3">
-                {installedSkillCards.map((skill) => {
-                  const badge = skill.managed
-                    ? { label: "Nova Managed", className: "bg-blue-50 text-blue-700" }
-                    : scanBadge(skillScanResults[skill.id] || null);
-                  return (
-                    <div key={skill.id} className="bg-white rounded-2xl p-4 shadow-sm border border-[var(--border-subtle)]">
-                      <div className="flex flex-col lg:flex-row lg:items-center gap-4">
-                        <div className="flex items-start gap-3 flex-1 min-w-0">
-                          <div className="w-11 h-11 bg-[var(--system-gray-6)] rounded-xl flex items-center justify-center shrink-0">
-                            {skill.id === NOVA_X_SKILL_ID ? <XLogo className="w-5 h-5 text-[var(--text-primary)]" /> : <ShieldCheck className="w-5 h-5 text-[var(--text-tertiary)]" />}
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <h3 className="font-bold text-[var(--text-primary)]">{skill.name}</h3>
-                              <span className={clsx("text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md", badge.className)}>
-                                {badge.label}
-                              </span>
-                            </div>
-                            <p className="text-xs text-[var(--text-tertiary)] mt-0.5">{skill.sourceLabel}</p>
-                            <p className="text-sm text-[var(--text-secondary)] mt-2 line-clamp-2">{skill.description}</p>
-                            <div className="mt-2 flex flex-wrap gap-1.5">
-                              {skill.tags.map((tag) => (
-                                <span key={tag} className="text-[10px] px-2 py-0.5 rounded-full bg-[var(--system-gray-6)] text-[var(--text-secondary)]">
-                                  {tag}
-                                </span>
-                              ))}
-                            </div>
-                            {skill.path && <p className="mt-2 text-[11px] text-[var(--text-tertiary)] break-all">{skill.path}</p>}
-                          </div>
-                        </div>
-                        <div className={clsx("grid gap-2 lg:w-[230px]", skill.managed ? "grid-cols-1" : "grid-cols-2")}>
-                          {!skill.managed && (
-                            <button
-                              onClick={() => handleAuditSkill(skill)}
-                              className="py-2 rounded-lg text-xs font-semibold bg-[var(--system-gray-6)] text-[var(--text-primary)] hover:bg-[var(--system-gray-5)]"
-                            >
-                              Security Scan
-                            </button>
-                          )}
-                          {skill.integrationProvider ? (
-                            <button
-                              onClick={() =>
-                                skill.connected
-                                  ? handleDisconnectIntegration(skill.integrationProvider as IntegrationProvider)
-                                  : handleConnectIntegration(skill.integrationProvider as IntegrationProvider)
-                              }
-                              disabled={connecting === skill.integrationProvider}
-                              className={clsx(
-                                "py-2 rounded-lg text-xs font-semibold",
-                                skill.connected
-                                  ? "bg-green-50 text-green-700 border border-green-100"
-                                  : "bg-[var(--system-blue)] text-white"
-                              )}
-                            >
-                              {connecting === skill.integrationProvider ? "..." : skill.connected ? "Connected" : "Connect X"}
-                            </button>
-                          ) : skill.workspaceSkillId ? (
-                            <button
-                              onClick={() => handleRemoveWorkspaceSkill(skill.workspaceSkillId as string)}
-                              disabled={removingSkill === skill.workspaceSkillId}
-                              className="py-2 rounded-lg text-xs font-semibold bg-red-50 text-red-700 border border-red-100 disabled:opacity-60"
-                            >
-                              {removingSkill === skill.workspaceSkillId ? "Removing..." : "Remove"}
-                            </button>
-                          ) : (
-                            <button disabled className="py-2 rounded-lg text-xs font-semibold bg-[var(--system-gray-6)] text-[var(--text-tertiary)]">
-                              Local Skill
-                            </button>
-                          )}
-                        </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {skillCards.map((skill) => {
+                const badge = skill.managed
+                  ? { label: "Nova Managed", className: "bg-blue-50 text-blue-700" }
+                  : scanBadge(skillScanResults[skill.id] || null);
+                return (
+                  <div key={skill.id} className="bg-white rounded-2xl p-5 shadow-sm border border-[var(--border-subtle)] flex flex-col h-full">
+                    <div className="flex justify-between items-start mb-3">
+                      <div className="w-12 h-12 bg-[var(--system-gray-6)] rounded-xl flex items-center justify-center">
+                        {skill.id === NOVA_X_SKILL_ID ? <XLogo className="w-6 h-6 text-[var(--text-primary)]" /> : <ShieldCheck className="w-6 h-6 text-[var(--text-tertiary)]" />}
                       </div>
+                      <span className={clsx("text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md", badge.className)}>
+                        {badge.label}
+                      </span>
                     </div>
-                  );
-                })}
-              </div>
+
+                    <div className="mb-4 flex-1">
+                      <h3 className="font-bold text-[var(--text-primary)] mb-1">{skill.name}</h3>
+                      <p className="text-xs text-[var(--text-tertiary)] mb-2">{skill.sourceLabel}</p>
+                      <p className="text-sm text-[var(--text-secondary)] mb-3 line-clamp-3">{skill.description}</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {skill.tags.map((tag) => (
+                          <span key={tag} className="text-[10px] px-2 py-0.5 rounded-full bg-[var(--system-gray-6)] text-[var(--text-secondary)]">
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                      {skill.path && <p className="mt-3 text-[11px] text-[var(--text-tertiary)] break-all">{skill.path}</p>}
+                    </div>
+
+                    <div className={clsx("grid gap-2", skill.managed ? "grid-cols-1" : "grid-cols-2")}>
+                      {!skill.managed && (
+                        <button
+                          onClick={() => handleAuditSkill(skill)}
+                          className="py-2 rounded-lg text-xs font-semibold bg-[var(--system-gray-6)] text-[var(--text-primary)] hover:bg-[var(--system-gray-5)]"
+                        >
+                          Security Scan
+                        </button>
+                      )}
+                      {skill.integrationProvider ? (
+                        <button
+                          onClick={() =>
+                            skill.connected
+                              ? handleDisconnectIntegration(skill.integrationProvider as IntegrationProvider)
+                              : handleConnectIntegration(skill.integrationProvider as IntegrationProvider)
+                          }
+                          disabled={connecting === skill.integrationProvider}
+                          className={clsx(
+                            "py-2 rounded-lg text-xs font-semibold",
+                            skill.connected
+                              ? "bg-green-50 text-green-700 border border-green-100"
+                              : "bg-[var(--system-blue)] text-white"
+                          )}
+                        >
+                          {connecting === skill.integrationProvider ? "..." : skill.connected ? "Connected" : "Connect X"}
+                        </button>
+                      ) : (
+                        <button disabled className="py-2 rounded-lg text-xs font-semibold bg-[var(--system-gray-6)] text-[var(--text-tertiary)]">
+                          Local Skill
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
 
-          {!skillsLoading && installedSkillCards.length === 0 && (
+          {!skillsLoading && skillCards.length === 0 && (
             <div className="text-center py-20">
               <div className="w-16 h-16 bg-[var(--system-gray-6)] rounded-full flex items-center justify-center mx-auto mb-4 text-[var(--text-tertiary)]">
                 <Search className="w-8 h-8" />
               </div>
               <h3 className="text-lg font-medium text-[var(--text-primary)] mb-1">No matching skills</h3>
-              <p className="text-[var(--text-secondary)]">Try a different search term or install a skill from ClawHub below.</p>
+              <p className="text-[var(--text-secondary)]">Try a different search term or browse ClawHub.</p>
             </div>
           )}
-
-          <div className="mb-8 bg-white rounded-2xl border border-[var(--border-subtle)] p-5">
-            <p className="text-xs uppercase tracking-wide text-[var(--text-tertiary)] mb-2">Skill Lookup</p>
-            <div className="flex flex-col lg:flex-row lg:items-center gap-3">
-              <div className="relative flex-1">
-                <Search className="w-4 h-4 text-[var(--text-tertiary)] absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  value={skillQuery}
-                  onChange={(e) => setSkillQuery(e.target.value)}
-                  className="w-full pl-9 pr-3 py-2 rounded-lg border border-[var(--border-subtle)] bg-white text-sm"
-                  placeholder="Search by skill name, slug, or description"
-                />
-              </div>
-              <select
-                value={clawhubSort}
-                onChange={(e) => setClawhubSort(e.target.value as ClawhubSort)}
-                className="px-3 py-2 rounded-lg border border-[var(--border-subtle)] bg-white text-sm"
-              >
-                <option value="stars">Most Stars</option>
-                <option value="downloads">Most Downloads</option>
-                <option value="installs">Most Installs</option>
-                <option value="newest">Newest</option>
-              </select>
-            </div>
-            <p className="text-xs text-[var(--text-secondary)] mt-2">
-              Search first, then install from the ClawHub rows below. Nova scans before install.
-            </p>
-            {clawhubError && <p className="text-xs text-red-600 mt-2">{clawhubError}</p>}
-          </div>
-
-          <div className="mb-10">
-            <h2 className="text-xl font-bold text-[var(--text-primary)] mb-4">Browse ClawHub</h2>
-            <div className="bg-white rounded-2xl border border-[var(--border-subtle)] p-5">
-              {clawhubLoading && (
-                <div className="py-8 text-sm text-[var(--text-secondary)] flex items-center gap-2">
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Loading ClawHub skills...
-                </div>
-              )}
-
-              {!clawhubLoading && clawhubLookupError && (
-                <div className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
-                  {clawhubLookupError}
-                </div>
-              )}
-
-              {!clawhubLoading && !clawhubLookupError && (
-                <div className="space-y-3">
-                  {clawhubCatalog.map((skill) => {
-                    const installed = installedWorkspaceSkillIds.has(skill.slug);
-                    const expanded = expandedClawhubSlug === skill.slug;
-                    const details = clawhubDetails[skill.slug];
-                    return (
-                      <div key={skill.slug} className="rounded-xl border border-[var(--border-subtle)] bg-[var(--system-gray-6)]/40 p-4">
-                        <div className="flex flex-col lg:flex-row lg:items-start gap-4">
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <h3 className="font-semibold text-[var(--text-primary)]">{skill.display_name || skill.slug}</h3>
-                              {installed ? (
-                                <span className="text-[10px] font-bold uppercase tracking-wider text-green-700 bg-green-50 px-2 py-1 rounded-md">
-                                  Installed
-                                </span>
-                              ) : (
-                                <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)] bg-white px-2 py-1 rounded-md border border-[var(--border-subtle)]">
-                                  ClawHub
-                                </span>
-                              )}
-                            </div>
-                            <p className="text-xs text-[var(--text-tertiary)]">{skill.slug}</p>
-                            <p className="mt-2 text-sm text-[var(--text-secondary)] line-clamp-2">{skill.summary || "No summary provided."}</p>
-                            <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-[var(--text-tertiary)]">
-                              <span className="px-2 py-0.5 rounded-full bg-white border border-[var(--border-subtle)]">v{skill.latest_version || "latest"}</span>
-                              <span className="px-2 py-0.5 rounded-full bg-white border border-[var(--border-subtle)]">{skill.stars} stars</span>
-                              <span className="px-2 py-0.5 rounded-full bg-white border border-[var(--border-subtle)]">{skill.downloads} downloads</span>
-                              <span className="px-2 py-0.5 rounded-full bg-white border border-[var(--border-subtle)]">{skill.installs_all_time} installs</span>
-                            </div>
-                            {expanded && (
-                              <div className="mt-3 rounded-lg bg-white border border-[var(--border-subtle)] p-3 text-xs">
-                                {clawhubDetailLoading === skill.slug && (
-                                  <div className="flex items-center gap-2 text-[var(--text-secondary)]">
-                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                    Loading details...
-                                  </div>
-                                )}
-                                {clawhubDetailError && (
-                                  <p className="text-red-600">{clawhubDetailError}</p>
-                                )}
-                                {details && (
-                                  <div className="space-y-1 text-[var(--text-secondary)]">
-                                    <p><span className="font-semibold text-[var(--text-primary)]">Owner:</span> {details.owner_display_name || details.owner_handle || "Unknown"}</p>
-                                    <p><span className="font-semibold text-[var(--text-primary)]">Latest:</span> {details.latest_version || "latest"}</p>
-                                    <p><span className="font-semibold text-[var(--text-primary)]">Installs:</span> {details.installs_all_time}</p>
-                                    {details.changelog && (
-                                      <p className="whitespace-pre-wrap line-clamp-4"><span className="font-semibold text-[var(--text-primary)]">Changelog:</span> {details.changelog}</p>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                          <div className="grid grid-cols-2 lg:grid-cols-1 gap-2 lg:w-[170px]">
-                            <button
-                              onClick={() => toggleClawhubDetails(skill.slug)}
-                              className="py-2 rounded-lg text-xs font-semibold bg-white border border-[var(--border-subtle)] text-[var(--text-primary)]"
-                            >
-                              {expanded ? "Hide Details" : "Details"}
-                            </button>
-                            <button
-                              onClick={() => scanInstallSkillFromClawhub(skill.slug, false)}
-                              disabled={clawhubBusy || installed}
-                              className={clsx(
-                                "py-2 rounded-lg text-xs font-semibold",
-                                installed
-                                  ? "bg-[var(--system-gray-6)] text-[var(--text-tertiary)]"
-                                  : "bg-[var(--system-blue)] text-white"
-                              )}
-                            >
-                              {installed
-                                ? "Installed"
-                                : clawhubBusy && clawhubBusySlug === skill.slug
-                                  ? "Scanning..."
-                                  : "Scan + Install"}
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              {!clawhubLoading && !clawhubLookupError && clawhubCatalog.length === 0 && (
-                <div className="text-center py-12 text-sm text-[var(--text-secondary)]">
-                  No ClawHub skills found for this search.
-                </div>
-              )}
-            </div>
-          </div>
         </>
       )}
 
@@ -1216,7 +987,7 @@ export function Store({
             ? confirmEnablePlugin
             : pendingUnsafeSlug
               ? () => {
-                  void scanInstallSkillFromClawhub(pendingUnsafeSlug, true);
+                  void scanInstallSkillFromClawhub(true);
                 }
               : undefined
         }

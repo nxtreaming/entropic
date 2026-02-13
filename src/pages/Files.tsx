@@ -1240,30 +1240,6 @@ export function Files({
             </AppWindow>
           )}
 
-          {/* ── SKILLS WINDOW ────────────────────────────────────────── */}
-          {skillsOpen && (
-            <AppWindow
-              title="Skills"
-              icon={Sparkles}
-              position={skillsPos}
-              size={skillsSize}
-              zIndex={windowZ.skills ?? 64}
-              onClose={() => setSkillsOpen(false)}
-              onFocus={() => focusWindow("skills")}
-              onDragStart={(e) =>
-                startWindowDrag(e, skillsDragRef, skillsPos, setSkillsPos, "skills")
-              }
-            >
-              <Suspense fallback={PANEL_FALLBACK}>
-                <SkillsStore
-                  view="skills"
-                  integrationsSyncing={integrationsSyncing}
-                  integrationsMissing={integrationsMissing}
-                />
-              </Suspense>
-            </AppWindow>
-          )}
-
           {/* ── MESSAGING WINDOW ─────────────────────────────────────── */}
           {channelsOpen && (
             <AppWindow
@@ -1464,24 +1440,6 @@ export function Files({
                 <Puzzle className="w-6 h-6 text-white" />
               </div>
               <div className={`w-1 h-1 rounded-full mt-1 transition-opacity ${pluginsOpen ? "bg-white/80" : "opacity-0"}`} />
-            </button>
-
-            {/* Skills */}
-            <button
-              onClick={() => {
-                if (!skillsOpen) setSkillsOpen(true);
-                focusWindow("skills");
-              }}
-              className="group flex flex-col items-center"
-              title="Skills"
-            >
-              <div
-                className="w-12 h-12 rounded-[14px] flex items-center justify-center transition-all duration-200 group-hover:scale-[1.15] group-hover:-translate-y-2.5"
-                style={{ background: "linear-gradient(180deg, #22d3ee 0%, #0ea5e9 100%)", boxShadow: "0 3px 10px rgba(14,165,233,0.4)" }}
-              >
-                <Sparkles className="w-6 h-6 text-white" />
-              </div>
-              <div className={`w-1 h-1 rounded-full mt-1 transition-opacity ${skillsOpen ? "bg-white/80" : "opacity-0"}`} />
             </button>
 
             {/* Messaging */}

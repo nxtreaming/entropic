@@ -73,11 +73,27 @@ jobs:
         working-directory: nova
         run: ./scripts/bundle-runtime-image.sh
 
+      - name: Build skill scanner image (linux/arm64)
+        working-directory: nova
+        env:
+          DOCKER_DEFAULT_PLATFORM: linux/arm64
+        run: ./scripts/build-skill-scanner.sh
+
+      - name: Bundle skill scanner image tar
+        working-directory: nova
+        run: IMAGE=nova-skill-scanner:latest OUTPUT=src-tauri/resources/nova-skill-scanner.tar.gz ./scripts/bundle-runtime-image.sh
+
       - name: Upload runtime image tar
         uses: actions/upload-artifact@v4
         with:
           name: openclaw-runtime-arm64
           path: nova/src-tauri/resources/openclaw-runtime.tar.gz
+
+      - name: Upload skill scanner image tar
+        uses: actions/upload-artifact@v4
+        with:
+          name: skill-scanner-arm64
+          path: nova/src-tauri/resources/nova-skill-scanner.tar.gz
 
   # ──────────────────────────────────────────────
   # macOS (Apple Silicon)
@@ -112,6 +128,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: openclaw-runtime-arm64
+          path: src-tauri/resources
+
+      - name: Download skill scanner image tar (linux/arm64)
+        uses: actions/download-artifact@v4
+        with:
+          name: skill-scanner-arm64
           path: src-tauri/resources
 
       - name: Bundle runtime (Colima + Lima + Docker CLI)

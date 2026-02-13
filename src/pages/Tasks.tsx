@@ -971,15 +971,41 @@ export function Tasks({ gatewayRunning }: Props) {
         </div>
       )}
 
+      <div className="mb-8 p-6 bg-[var(--system-gray-6)]/50 rounded-2xl border border-[var(--border-subtle)]">
+        <h4 className="font-bold text-[var(--text-primary)] mb-2 flex items-center gap-2">
+          <Smartphone className="w-4 h-4" />
+          Keep Tasks Running
+        </h4>
+        <p className="text-sm text-[var(--text-secondary)] mb-4">Scheduled tasks only execute when this computer is awake and connected.</p>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="bg-white p-3 rounded-xl shadow-sm border border-[var(--border-subtle)]">
+            <p className="text-xs font-bold uppercase mb-1">macOS</p>
+            <p className="text-[11px] text-[var(--text-tertiary)]">System Settings → Displays → Advanced → Prevent automatic sleeping.</p>
+          </div>
+          <div className="bg-white p-3 rounded-xl shadow-sm border border-[var(--border-subtle)]">
+            <p className="text-xs font-bold uppercase mb-1">Windows</p>
+            <p className="text-[11px] text-[var(--text-tertiary)]">Power settings → When plugged in, never sleep.</p>
+          </div>
+          <div className="bg-white p-3 rounded-xl shadow-sm border border-[var(--border-subtle)]">
+            <p className="text-xs font-bold uppercase mb-1">Linux</p>
+            <p className="text-[11px] text-[var(--text-tertiary)]">Use <code>systemd-inhibit</code> or your desktop power manager.</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="mb-4">
+        <h2 className="text-lg font-bold text-[var(--text-primary)]">Active Tasks</h2>
+      </div>
+
       {/* Task List */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      <div className="space-y-4">
         {gatewayRunning && loading && jobs.length === 0 ? (
-          <div className="col-span-full py-20 text-center">
+          <div className="py-20 text-center">
             <RefreshCw className="w-8 h-8 animate-spin mx-auto mb-4 text-[var(--text-tertiary)]" />
             <p className="text-[var(--text-secondary)]">Loading your tasks...</p>
           </div>
         ) : gatewayRunning && jobs.length === 0 ? (
-          <div className="col-span-full py-20 text-center bg-white rounded-2xl border border-[var(--border-subtle)] border-dashed">
+          <div className="py-20 text-center bg-white rounded-2xl border border-[var(--border-subtle)] border-dashed">
             <CalendarClock className="w-12 h-12 mx-auto mb-4 text-[var(--text-tertiary)] opacity-30" />
             <h3 className="text-lg font-bold text-[var(--text-primary)]">No tasks scheduled</h3>
             <p className="text-[var(--text-secondary)] mb-6">Create a task to start automating your workflow.</p>
@@ -989,16 +1015,30 @@ export function Tasks({ gatewayRunning }: Props) {
           jobs.map((job) => {
             const dot = statusDot(job);
             return (
-              <div key={job.id} className="group bg-white rounded-2xl p-5 shadow-sm border border-[var(--border-subtle)] hover:shadow-md transition-all flex flex-col h-full relative">
-                
-                <div className="flex justify-between items-start mb-4">
-                   <div className={clsx(
-                     "w-12 h-12 rounded-xl flex items-center justify-center border transition-colors",
-                     job.enabled ? "bg-blue-50 border-blue-100 text-blue-600" : "bg-gray-50 border-gray-100 text-gray-400"
-                   )}>
-                     <Clock className="w-6 h-6" />
-                   </div>
-                   <button
+              <div key={job.id} className="group bg-white rounded-2xl p-4 shadow-sm border border-[var(--border-subtle)] hover:shadow-md transition-all">
+                <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                  <div className="flex items-start gap-3 min-w-0 flex-1">
+                    <div className={clsx(
+                      "w-10 h-10 rounded-xl flex items-center justify-center border transition-colors flex-shrink-0",
+                      job.enabled ? "bg-blue-50 border-blue-100 text-blue-600" : "bg-gray-50 border-gray-100 text-gray-400"
+                    )}>
+                      <Clock className="w-5 h-5" />
+                    </div>
+                    <div className="min-w-0">
+                      <h3 className="font-bold text-[var(--text-primary)] text-base mb-1 line-clamp-1">{job.name}</h3>
+                      <div className="flex items-center gap-2 mb-1">
+                        <div className="w-2 h-2 rounded-full" style={{ background: dot.color }} />
+                        <span className="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)]">{dot.title}</span>
+                      </div>
+                      <p className="text-sm font-medium text-[var(--system-blue)]">{describeSchedule(job.schedule)}</p>
+                      {job.description && (
+                        <p className="mt-1 text-sm text-[var(--text-secondary)] line-clamp-1 italic">"{job.description}"</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between md:justify-end gap-3 md:flex-shrink-0">
+                    <button
                       onClick={() => handleToggle(job)}
                       className={clsx(
                         "relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none",
@@ -1010,60 +1050,26 @@ export function Tasks({ gatewayRunning }: Props) {
                         job.enabled ? "translate-x-5" : "translate-x-0"
                       )} />
                     </button>
-                </div>
-
-                <div className="mb-6 flex-1">
-                   <h3 className="font-bold text-[var(--text-primary)] text-lg mb-1 line-clamp-1">{job.name}</h3>
-                   <div className="flex items-center gap-2 mb-3">
-                      <div className="w-2 h-2 rounded-full" style={{ background: dot.color }} />
-                      <span className="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)]">{dot.title}</span>
-                   </div>
-                   <p className="text-sm font-medium text-[var(--system-blue)] mb-2">{describeSchedule(job.schedule)}</p>
-                   {job.description && (
-                     <p className="text-sm text-[var(--text-secondary)] line-clamp-2 italic">"{job.description}"</p>
-                   )}
-                </div>
-
-                <div className="grid grid-cols-4 gap-2 pt-4 border-t border-[var(--border-subtle)]">
-                  <button onClick={() => handleRun(job)} className="p-2 rounded-lg bg-[var(--system-gray-6)] hover:bg-green-50 hover:text-green-600 transition-colors flex items-center justify-center" title="Run Now">
-                    <Play className="w-4 h-4 fill-current" />
-                  </button>
-                  <button onClick={() => openEdit(job)} className="p-2 rounded-lg bg-[var(--system-gray-6)] hover:bg-blue-50 hover:text-blue-600 transition-colors flex items-center justify-center" title="Edit Task">
-                    <Pencil className="w-4 h-4" />
-                  </button>
-                  <button onClick={() => openHistory(job)} className="p-2 rounded-lg bg-[var(--system-gray-6)] hover:bg-gray-200 transition-colors flex items-center justify-center" title="History">
-                    <Clock className="w-4 h-4" />
-                  </button>
-                  <button onClick={() => handleDelete(job)} className="p-2 rounded-lg bg-[var(--system-gray-6)] hover:bg-red-50 hover:text-red-600 transition-colors flex items-center justify-center" title="Delete">
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => handleRun(job)} className="p-2 rounded-lg bg-[var(--system-gray-6)] hover:bg-green-50 hover:text-green-600 transition-colors flex items-center justify-center" title="Run Now">
+                        <Play className="w-4 h-4 fill-current" />
+                      </button>
+                      <button onClick={() => openEdit(job)} className="p-2 rounded-lg bg-[var(--system-gray-6)] hover:bg-blue-50 hover:text-blue-600 transition-colors flex items-center justify-center" title="Edit Task">
+                        <Pencil className="w-4 h-4" />
+                      </button>
+                      <button onClick={() => openHistory(job)} className="p-2 rounded-lg bg-[var(--system-gray-6)] hover:bg-gray-200 transition-colors flex items-center justify-center" title="History">
+                        <Clock className="w-4 h-4" />
+                      </button>
+                      <button onClick={() => handleDelete(job)} className="p-2 rounded-lg bg-[var(--system-gray-6)] hover:bg-red-50 hover:text-red-600 transition-colors flex items-center justify-center" title="Delete">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
             );
           })
         )}
-      </div>
-
-      <div className="mt-12 p-6 bg-[var(--system-gray-6)]/50 rounded-2xl border border-[var(--border-subtle)]">
-         <h4 className="font-bold text-[var(--text-primary)] mb-2 flex items-center gap-2">
-           <Smartphone className="w-4 h-4" />
-           Keep Tasks Running
-         </h4>
-         <p className="text-sm text-[var(--text-secondary)] mb-4">Scheduled tasks only execute when this computer is awake and connected.</p>
-         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="bg-white p-3 rounded-xl shadow-sm border border-[var(--border-subtle)]">
-               <p className="text-xs font-bold uppercase mb-1">macOS</p>
-               <p className="text-[11px] text-[var(--text-tertiary)]">System Settings → Displays → Advanced → Prevent automatic sleeping.</p>
-            </div>
-            <div className="bg-white p-3 rounded-xl shadow-sm border border-[var(--border-subtle)]">
-               <p className="text-xs font-bold uppercase mb-1">Windows</p>
-               <p className="text-[11px] text-[var(--text-tertiary)]">Power settings → When plugged in, never sleep.</p>
-            </div>
-            <div className="bg-white p-3 rounded-xl shadow-sm border border-[var(--border-subtle)]">
-               <p className="text-xs font-bold uppercase mb-1">Linux</p>
-               <p className="text-[11px] text-[var(--text-tertiary)]">Use <code>systemd-inhibit</code> or your desktop power manager.</p>
-            </div>
-         </div>
       </div>
 
       {/* Modal logic remains identical but styling updated implicitly by global theme */}

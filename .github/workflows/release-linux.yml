@@ -102,9 +102,16 @@ jobs:
       - name: Bundle runtime image tar
         run: ./scripts/bundle-runtime-image.sh
 
+      - name: Build skill scanner image (linux/amd64)
+        run: ./scripts/build-skill-scanner.sh
+
+      - name: Bundle skill scanner image tar
+        run: IMAGE=nova-skill-scanner:latest OUTPUT=src-tauri/resources/nova-skill-scanner.tar.gz ./scripts/bundle-runtime-image.sh
+
       - name: Reclaim disk after runtime bundle
         run: |
           docker image rm openclaw-runtime:latest || true
+          docker image rm nova-skill-scanner:latest || true
           docker builder prune -af || true
           docker system prune -af --volumes || true
           rm -rf openclaw/node_modules openclaw nova-skills || true

@@ -22,6 +22,8 @@ import {
   Loader2,
   Image,
   Puzzle,
+  Sparkles,
+  Globe,
   Radio,
   ScrollText,
   Settings as SettingsIcon,
@@ -37,6 +39,7 @@ import { resolveGatewayAuth } from "../lib/gateway-auth";
 import { loadOnboardingData } from "../lib/profile";
 import { WALLPAPERS, DEFAULT_WALLPAPER_ID, getWallpaperById } from "../lib/wallpapers";
 const PluginStore = lazy(() => import("./Store").then((m) => ({ default: m.Store })));
+const SkillsStore = lazy(() => import("./Store").then((m) => ({ default: m.Store })));
 const Channels = lazy(() => import("./Channels").then((m) => ({ default: m.Channels })));
 const Logs = lazy(() => import("./Logs").then((m) => ({ default: m.Logs })));
 const Settings = lazy(() => import("./Settings").then((m) => ({ default: m.Settings })));
@@ -76,6 +79,8 @@ const HIDDEN_FILES = new Set(["HEARTBEAT.md", "IDENTITY.md", "SOUL.md", "TOOLS.m
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]);
 const BINARY_EXTS = new Set(["pdf", "zip", "xlsx", "xls", "docx", "pptx"]);
 const GATEWAY_URL = "ws://127.0.0.1:19789";
+const GATEWAY_TOKEN = "nova-local-gateway";
+const DEFAULT_BROWSER_URL = "https://clawhub.ai/skills";
 const PANEL_FALLBACK = (
   <div className="p-4 text-xs text-[var(--text-tertiary)]">Loading…</div>
 );
@@ -131,6 +136,14 @@ function getFileColor(name: string, isDir: boolean): string {
   if (["json","yaml","yml","toml"].includes(ext)) return "#a78bfa";
   if (["md","txt"].includes(ext)) return "#8c8c8c";
   return "#8c8c8c";
+}
+
+function normalizeBrowserUrl(raw: string): string {
+  const value = raw.trim();
+  if (!value) return "";
+  if (/^https?:\/\//i.test(value)) return value;
+  if (/^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(value)) return value;
+  return `https://${value}`;
 }
 
 function FolderIcon({ size = 64, selected = false }: { size?: number; selected?: boolean }) {
@@ -242,7 +255,9 @@ export function Files({
   // Windows
   const [finderOpen, setFinderOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
+  const [browserOpen, setBrowserOpen] = useState(false);
   const [pluginsOpen, setPluginsOpen] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
   const [channelsOpen, setChannelsOpen] = useState(false);
   const [tasksOpen, setTasksOpen] = useState(false);
   const [logsOpen, setLogsOpen] = useState(false);
@@ -257,21 +272,27 @@ export function Files({
   // Chat window drag
   const [chatPos, setChatPos] = useState({ x: 120, y: 40 });
   const chatDragRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
+  const [browserPos, setBrowserPos] = useState({ x: 140, y: 52 });
+  const [browserSize] = useState({ w: 840, h: 560 });
+  const browserDragRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
 
   // Plugin windows drag
   const [pluginsPos, setPluginsPos] = useState({ x: 180, y: 80 });
+  const [skillsPos, setSkillsPos] = useState({ x: 210, y: 95 });
   const [channelsPos, setChannelsPos] = useState({ x: 240, y: 120 });
   const [tasksPos, setTasksPos] = useState({ x: 220, y: 140 });
   const [logsPos, setLogsPos] = useState({ x: 300, y: 160 });
   const [billingPos, setBillingPos] = useState({ x: 260, y: 110 });
   const [settingsPos, setSettingsPos] = useState({ x: 200, y: 70 });
   const [pluginsSize] = useState({ w: 520, h: 540 });
+  const [skillsSize] = useState({ w: 520, h: 560 });
   const [channelsSize] = useState({ w: 520, h: 520 });
   const [tasksSize] = useState({ w: 620, h: 560 });
   const [logsSize] = useState({ w: 560, h: 420 });
   const [billingSize] = useState({ w: 520, h: 520 });
   const [settingsSize] = useState({ w: 740, h: 560 });
   const pluginsDragRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
+  const skillsDragRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
   const channelsDragRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
   const tasksDragRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
   const logsDragRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
@@ -308,6 +329,14 @@ export function Files({
   const chatClientRef = useRef<GatewayClient | null>(null);
   const chatSessionRef = useRef<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const [browserNav, setBrowserNav] = useState<{ history: string[]; index: number }>({
+    history: [DEFAULT_BROWSER_URL],
+    index: 0,
+  });
+  const [browserUrlInput, setBrowserUrlInput] = useState(DEFAULT_BROWSER_URL);
+  const [browserLoading, setBrowserLoading] = useState(false);
+  const [browserLoadError, setBrowserLoadError] = useState<string | null>(null);
+  const [browserFrameNonce, setBrowserFrameNonce] = useState(0);
 
   const proxyEnabled = isAuthConfigured && isAuthenticated && !useLocalKeys;
 
@@ -468,6 +497,53 @@ export function Files({
 
   function handleChatDragStart(e: ReactMouseEvent<HTMLElement>) {
     startWindowDrag(e, chatDragRef, chatPos, setChatPos, "chat");
+  }
+
+  const browserCurrentUrl = browserNav.history[browserNav.index] || DEFAULT_BROWSER_URL;
+
+  useEffect(() => {
+    setBrowserUrlInput(browserCurrentUrl);
+  }, [browserCurrentUrl]);
+
+  function navigateBrowser(input: string) {
+    const next = normalizeBrowserUrl(input);
+    if (!next) return;
+    setBrowserLoadError(null);
+    setBrowserLoading(true);
+    setBrowserNav((prev) => {
+      const base = prev.history.slice(0, prev.index + 1);
+      if (base[base.length - 1] === next) {
+        return prev;
+      }
+      return {
+        history: [...base, next],
+        index: base.length,
+      };
+    });
+  }
+
+  function goBrowserBack() {
+    setBrowserNav((prev) => {
+      if (prev.index <= 0) return prev;
+      setBrowserLoadError(null);
+      setBrowserLoading(true);
+      return { ...prev, index: prev.index - 1 };
+    });
+  }
+
+  function goBrowserForward() {
+    setBrowserNav((prev) => {
+      if (prev.index >= prev.history.length - 1) return prev;
+      setBrowserLoadError(null);
+      setBrowserLoading(true);
+      return { ...prev, index: prev.index + 1 };
+    });
+  }
+
+  function reloadBrowser() {
+    setBrowserLoadError(null);
+    setBrowserLoading(true);
+    setBrowserFrameNonce((prev) => prev + 1);
   }
 
   // ── File browser logic ──────────────────────────────────────────────
@@ -1047,6 +1123,99 @@ export function Files({
             </div>
           )}
 
+          {/* ── BROWSER WINDOW ───────────────────────────────────────── */}
+          {browserOpen && (
+            <AppWindow
+              title="Browser"
+              icon={Globe}
+              position={browserPos}
+              size={browserSize}
+              zIndex={windowZ.browser ?? 62}
+              onClose={() => setBrowserOpen(false)}
+              onFocus={() => focusWindow("browser")}
+              onDragStart={(e) =>
+                startWindowDrag(e, browserDragRef, browserPos, setBrowserPos, "browser")
+              }
+            >
+              <div className="h-full flex flex-col bg-white">
+                <div className="px-3 py-2 border-b border-[var(--border-subtle)] bg-[var(--system-gray-6)]/70">
+                  <form
+                    className="flex items-center gap-2"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      navigateBrowser(browserUrlInput);
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={goBrowserBack}
+                      disabled={browserNav.index <= 0}
+                      className="h-8 w-8 rounded-lg border border-[var(--border-subtle)] bg-white text-[var(--text-secondary)] disabled:opacity-40"
+                      title="Back"
+                    >
+                      <ChevronLeft className="w-4 h-4 mx-auto" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={goBrowserForward}
+                      disabled={browserNav.index >= browserNav.history.length - 1}
+                      className="h-8 w-8 rounded-lg border border-[var(--border-subtle)] bg-white text-[var(--text-secondary)] disabled:opacity-40"
+                      title="Forward"
+                    >
+                      <ChevronRight className="w-4 h-4 mx-auto" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={reloadBrowser}
+                      className="h-8 w-8 rounded-lg border border-[var(--border-subtle)] bg-white text-[var(--text-secondary)]"
+                      title="Reload"
+                    >
+                      {browserLoading ? (
+                        <Loader2 className="w-4 h-4 mx-auto animate-spin" />
+                      ) : (
+                        <ArrowUp className="w-4 h-4 mx-auto rotate-90" />
+                      )}
+                    </button>
+                    <input
+                      type="text"
+                      value={browserUrlInput}
+                      onChange={(e) => setBrowserUrlInput(e.target.value)}
+                      className="flex-1 h-8 px-3 rounded-lg border border-[var(--border-subtle)] bg-white text-sm outline-none"
+                      placeholder="Enter URL"
+                    />
+                    <button
+                      type="submit"
+                      className="h-8 px-3 rounded-lg bg-[var(--system-blue)] text-white text-sm font-semibold"
+                    >
+                      Go
+                    </button>
+                  </form>
+                  {browserLoadError && (
+                    <p className="mt-2 text-xs text-red-600">
+                      {browserLoadError}
+                    </p>
+                  )}
+                </div>
+                <div className="flex-1 bg-white">
+                  <iframe
+                    key={`${browserCurrentUrl}|${browserFrameNonce}`}
+                    src={browserCurrentUrl}
+                    className="w-full h-full border-0"
+                    onLoad={() => {
+                      setBrowserLoading(false);
+                      setBrowserLoadError(null);
+                    }}
+                    onError={() => {
+                      setBrowserLoading(false);
+                      setBrowserLoadError("This site could not be loaded in the embedded browser.");
+                    }}
+                    referrerPolicy="no-referrer"
+                  />
+                </div>
+              </div>
+            </AppWindow>
+          )}
+
           {/* ── PLUGINS WINDOW ───────────────────────────────────────── */}
           {pluginsOpen && (
             <AppWindow
@@ -1054,7 +1223,7 @@ export function Files({
               icon={Puzzle}
               position={pluginsPos}
               size={pluginsSize}
-              zIndex={windowZ.plugins ?? 62}
+              zIndex={windowZ.plugins ?? 63}
               onClose={() => setPluginsOpen(false)}
               onFocus={() => focusWindow("plugins")}
               onDragStart={(e) =>
@@ -1071,6 +1240,30 @@ export function Files({
             </AppWindow>
           )}
 
+          {/* ── SKILLS WINDOW ────────────────────────────────────────── */}
+          {skillsOpen && (
+            <AppWindow
+              title="Skills"
+              icon={Sparkles}
+              position={skillsPos}
+              size={skillsSize}
+              zIndex={windowZ.skills ?? 64}
+              onClose={() => setSkillsOpen(false)}
+              onFocus={() => focusWindow("skills")}
+              onDragStart={(e) =>
+                startWindowDrag(e, skillsDragRef, skillsPos, setSkillsPos, "skills")
+              }
+            >
+              <Suspense fallback={PANEL_FALLBACK}>
+                <SkillsStore
+                  view="skills"
+                  integrationsSyncing={integrationsSyncing}
+                  integrationsMissing={integrationsMissing}
+                />
+              </Suspense>
+            </AppWindow>
+          )}
+
           {/* ── MESSAGING WINDOW ─────────────────────────────────────── */}
           {channelsOpen && (
             <AppWindow
@@ -1078,7 +1271,7 @@ export function Files({
               icon={Radio}
               position={channelsPos}
               size={channelsSize}
-              zIndex={windowZ.channels ?? 63}
+              zIndex={windowZ.channels ?? 65}
               onClose={() => setChannelsOpen(false)}
               onFocus={() => focusWindow("channels")}
               onDragStart={(e) =>
@@ -1098,7 +1291,7 @@ export function Files({
               icon={CalendarClock}
               position={tasksPos}
               size={tasksSize}
-              zIndex={windowZ.tasks ?? 64}
+              zIndex={windowZ.tasks ?? 66}
               onClose={() => setTasksOpen(false)}
               onFocus={() => focusWindow("tasks")}
               onDragStart={(e) =>
@@ -1118,7 +1311,7 @@ export function Files({
               icon={ScrollText}
               position={logsPos}
               size={logsSize}
-              zIndex={windowZ.logs ?? 65}
+              zIndex={windowZ.logs ?? 67}
               onClose={() => setLogsOpen(false)}
               onFocus={() => focusWindow("logs")}
               onDragStart={(e) =>
@@ -1138,7 +1331,7 @@ export function Files({
               icon={CreditCard}
               position={billingPos}
               size={billingSize}
-              zIndex={windowZ.billing ?? 66}
+              zIndex={windowZ.billing ?? 68}
               onClose={() => setBillingOpen(false)}
               onFocus={() => focusWindow("billing")}
               onDragStart={(e) =>
@@ -1158,7 +1351,7 @@ export function Files({
               icon={SettingsIcon}
               position={settingsPos}
               size={settingsSize}
-              zIndex={windowZ.settings ?? 67}
+              zIndex={windowZ.settings ?? 69}
               onClose={() => setSettingsOpen(false)}
               onFocus={() => focusWindow("settings")}
               onDragStart={(e) =>
@@ -1234,6 +1427,27 @@ export function Files({
               <div className={`w-1 h-1 rounded-full mt-1 transition-opacity ${chatOpen ? "bg-white/80" : "opacity-0"}`} />
             </button>
 
+            {/* Browser */}
+            <button
+              onClick={() => {
+                if (!browserOpen) {
+                  setBrowserOpen(true);
+                  setBrowserLoading(true);
+                }
+                focusWindow("browser");
+              }}
+              className="group flex flex-col items-center"
+              title="Browser"
+            >
+              <div
+                className="w-12 h-12 rounded-[14px] flex items-center justify-center transition-all duration-200 group-hover:scale-[1.15] group-hover:-translate-y-2.5"
+                style={{ background: "linear-gradient(180deg, #0ea5e9 0%, #0284c7 100%)", boxShadow: "0 3px 10px rgba(2,132,199,0.4)" }}
+              >
+                <Globe className="w-6 h-6 text-white" />
+              </div>
+              <div className={`w-1 h-1 rounded-full mt-1 transition-opacity ${browserOpen ? "bg-white/80" : "opacity-0"}`} />
+            </button>
+
             {/* Plugins */}
             <button
               onClick={() => {
@@ -1250,6 +1464,24 @@ export function Files({
                 <Puzzle className="w-6 h-6 text-white" />
               </div>
               <div className={`w-1 h-1 rounded-full mt-1 transition-opacity ${pluginsOpen ? "bg-white/80" : "opacity-0"}`} />
+            </button>
+
+            {/* Skills */}
+            <button
+              onClick={() => {
+                if (!skillsOpen) setSkillsOpen(true);
+                focusWindow("skills");
+              }}
+              className="group flex flex-col items-center"
+              title="Skills"
+            >
+              <div
+                className="w-12 h-12 rounded-[14px] flex items-center justify-center transition-all duration-200 group-hover:scale-[1.15] group-hover:-translate-y-2.5"
+                style={{ background: "linear-gradient(180deg, #22d3ee 0%, #0ea5e9 100%)", boxShadow: "0 3px 10px rgba(14,165,233,0.4)" }}
+              >
+                <Sparkles className="w-6 h-6 text-white" />
+              </div>
+              <div className={`w-1 h-1 rounded-full mt-1 transition-opacity ${skillsOpen ? "bg-white/80" : "opacity-0"}`} />
             </button>
 
             {/* Messaging */}

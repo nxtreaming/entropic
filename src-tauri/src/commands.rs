@@ -5,11 +5,12 @@ use base64::{
 };
 use futures_util::{SinkExt, StreamExt};
 use rand::RngCore;
+use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -246,6 +247,76 @@ fn ensure_runtime_image() -> Result<(), String> {
         registry_image,
         stderr.trim()
     ))
+}
+
+/// Ensure the scanner image is available locally.
+/// 1. If already present → return Ok immediately.
+/// 2. Try loading a bundled tar (resources/nova-skill-scanner.tar.gz or .tar).
+/// 3. Return an error if the image is still missing.
+fn ensure_scanner_image() -> Result<(), String> {
+    let check = docker_command()
+        .args(["image", "inspect", "nova-skill-scanner:latest"])
+        .output()
+        .map_err(|e| format!("Failed to check scanner image: {}", e))?;
+    if check.status.success() {
+        return Ok(());
+    }
+
+    println!("[Nova] Scanner image not found locally, attempting to load bundled tar...");
+
+    let tar_loaded = (|| -> Result<bool, String> {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let exe_dir = exe.parent().ok_or("Cannot resolve exe dir")?;
+
+        let mut search_dirs = Vec::new();
+
+        // Release bundle: .../Contents/MacOS/Nova → .../Contents/Resources/
+        if let Some(contents_dir) = exe_dir.parent() {
+            let resources = contents_dir.join("Resources");
+            search_dirs.push(resources.clone());
+            search_dirs.push(resources.join("resources"));
+        }
+
+        // Dev mode: .../target/debug/nova → .../target/debug/resources/
+        search_dirs.push(exe_dir.join("resources"));
+        // Also check src-tauri/resources/ (when running from project root)
+        search_dirs.push(exe_dir.join("..").join("..").join("resources"));
+
+        for dir in &search_dirs {
+            for name in &[
+                "nova-skill-scanner.tar.gz",
+                "nova-skill-scanner.tar",
+                "skill-scanner.tar.gz",
+                "skill-scanner.tar",
+            ] {
+                let tar_path = dir.join(name);
+                if tar_path.exists() {
+                    println!("[Nova] Loading scanner image from {}", tar_path.display());
+                    let load = docker_command()
+                        .args(["load", "-i"])
+                        .arg(&tar_path)
+                        .output()
+                        .map_err(|e| format!("docker load failed: {}", e))?;
+                    if load.status.success() {
+                        println!("[Nova] Scanner image loaded from bundled tar");
+                        return Ok(true);
+                    }
+                    let stderr = String::from_utf8_lossy(&load.stderr);
+                    println!("[Nova] Scanner docker load failed: {}", stderr);
+                }
+            }
+        }
+        Ok(false)
+    })();
+
+    match tar_loaded {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(
+            "Skill scanner image not available and no bundled scanner tar was found in app resources."
+                .to_string(),
+        ),
+        Err(e) => Err(format!("Failed to load scanner image from bundle: {}", e)),
+    }
 }
 
 async fn check_gateway_ws_health(ws_url: &str, token: &str) -> Result<bool, String> {
@@ -517,6 +588,33 @@ pub struct ClawhubInstallResult {
     pub installed_skill_id: Option<String>,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ClawhubCatalogSkill {
+    pub slug: String,
+    pub display_name: String,
+    pub summary: String,
+    pub latest_version: Option<String>,
+    pub downloads: u64,
+    pub installs_all_time: u64,
+    pub stars: u64,
+    pub updated_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ClawhubSkillDetails {
+    pub slug: String,
+    pub display_name: String,
+    pub summary: String,
+    pub latest_version: Option<String>,
+    pub changelog: Option<String>,
+    pub owner_handle: Option<String>,
+    pub owner_display_name: Option<String>,
+    pub downloads: u64,
+    pub installs_all_time: u64,
+    pub stars: u64,
+    pub updated_at: Option<u64>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct StoredAuth {
     version: u8,
@@ -625,6 +723,7 @@ fn get_runtime(app: &AppHandle) -> Runtime {
 
 const OPENCLAW_CONTAINER: &str = "nova-openclaw";
 const SCANNER_CONTAINER: &str = "nova-skill-scanner";
+const SCANNER_HOST_PORT: &str = "19791";
 const MANAGED_PLUGIN_IDS: &[&str] = &["nova-integrations", "nova-x"];
 
 fn start_scanner_sidecar() {
@@ -657,18 +756,10 @@ fn start_scanner_sidecar() {
         }
     }
 
-    // Check if scanner image exists
-    let image_check = docker_command()
-        .args(["image", "inspect", "nova-skill-scanner:latest"])
-        .output();
-    match &image_check {
-        Ok(out) if out.status.success() => {}
-        _ => {
-            eprintln!(
-                "[scanner] Image nova-skill-scanner:latest not found, skipping scanner sidecar"
-            );
-            return;
-        }
+    // Ensure scanner image is available (bundled tar in releases).
+    if let Err(err) = ensure_scanner_image() {
+        eprintln!("[scanner] {}", err);
+        return;
     }
 
     // Create and start scanner container
@@ -691,7 +782,7 @@ fn start_scanner_sidecar() {
             "--network",
             "nova-net",
             "-p",
-            "127.0.0.1:19790:8000",
+            &format!("127.0.0.1:{}:8000", SCANNER_HOST_PORT),
             "nova-skill-scanner:latest",
         ])
         .output();
@@ -733,6 +824,78 @@ fn docker_exec_output(args: &[&str]) -> Result<String, String> {
         return Err(stderr.to_string());
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn command_output_error(output: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !stderr.is_empty() && !stdout.is_empty() {
+        format!("{}\n{}", stderr, stdout)
+    } else if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        "Unknown command failure".to_string()
+    }
+}
+
+fn clawhub_exec(args: &[&str]) -> Result<Output, String> {
+    let mut cmd = docker_command();
+    cmd.args([
+        "exec",
+        OPENCLAW_CONTAINER,
+        "env",
+        "HOME=/data",
+        "XDG_CONFIG_HOME=/data/.config",
+        "npm_config_cache=/data/.npm",
+        "npx",
+        "-y",
+        "clawhub",
+    ]);
+    cmd.args(args);
+    cmd.output()
+        .map_err(|e| format!("Failed to run ClawHub command: {}", e))
+}
+
+fn clawhub_exec_output(args: &[&str]) -> Result<String, String> {
+    let output = clawhub_exec(args)?;
+    if !output.status.success() {
+        return Err(command_output_error(&output));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn parse_clawhub_json<T: DeserializeOwned>(output: &str) -> Result<T, String> {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return Err("Empty ClawHub response".to_string());
+    }
+
+    if let Ok(parsed) = serde_json::from_str::<T>(trimmed) {
+        return Ok(parsed);
+    }
+
+    let start = trimmed
+        .find('{')
+        .or_else(|| trimmed.find('['))
+        .ok_or_else(|| "Failed to locate JSON payload in ClawHub response".to_string())?;
+    let open = trimmed
+        .as_bytes()
+        .get(start)
+        .copied()
+        .ok_or_else(|| "Failed to parse ClawHub response".to_string())?;
+    let close = if open == b'{' { '}' } else { ']' };
+    let end = trimmed
+        .rfind(close)
+        .ok_or_else(|| "Failed to locate end of JSON payload in ClawHub response".to_string())?;
+    if end < start {
+        return Err("Invalid JSON payload boundaries in ClawHub response".to_string());
+    }
+
+    let payload = &trimmed[start..=end];
+    serde_json::from_str::<T>(payload)
+        .map_err(|e| format!("Failed to parse ClawHub JSON payload: {}", e))
 }
 
 fn scanner_running() -> Result<bool, String> {
@@ -924,7 +1087,7 @@ async fn scan_directory_with_scanner(scanner_dir: &str) -> Result<PluginScanResu
     let scan_url = if std::path::Path::new("/.dockerenv").exists() {
         format!("http://{}:8000/scan", SCANNER_CONTAINER)
     } else {
-        "http://127.0.0.1:19790/scan".to_string()
+        format!("http://127.0.0.1:{}/scan", SCANNER_HOST_PORT)
     };
 
     let res = client
@@ -3270,6 +3433,233 @@ pub async fn get_skill_store() -> Result<Vec<SkillInfo>, String> {
     Ok(out)
 }
 
+#[tauri::command]
+pub async fn remove_workspace_skill(id: String) -> Result<(), String> {
+    let skill_id = id.trim().to_string();
+    if !is_safe_component(&skill_id) {
+        return Err("Invalid skill id".to_string());
+    }
+    if skill_id == "nova-x" {
+        return Err("Nova-managed skills cannot be removed".to_string());
+    }
+
+    let full_path = format!("{}/skills/{}", WORKSPACE_ROOT, skill_id);
+    let exists = docker_command()
+        .args(["exec", OPENCLAW_CONTAINER, "test", "-d", &full_path])
+        .output()
+        .map_err(|e| format!("Failed to inspect skill: {}", e))?
+        .status
+        .success();
+
+    if !exists {
+        return Err("Skill not found".to_string());
+    }
+
+    docker_exec_output(&["exec", OPENCLAW_CONTAINER, "rm", "-rf", "--", &full_path])?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_clawhub_catalog(
+    query: Option<String>,
+    limit: Option<u32>,
+    sort: Option<String>,
+) -> Result<Vec<ClawhubCatalogSkill>, String> {
+    let query = query.unwrap_or_default().trim().to_string();
+    let query_lower = query.to_lowercase();
+    let max_results = limit.unwrap_or(40).clamp(1, 200);
+    let fetch_limit = if query_lower.is_empty() {
+        max_results
+    } else {
+        200
+    };
+    let fetch_limit_str = fetch_limit.to_string();
+    let normalized_sort = match sort
+        .as_deref()
+        .map(|v| v.trim())
+        .unwrap_or("trending")
+    {
+        "newest" => "newest".to_string(),
+        "downloads" => "downloads".to_string(),
+        "rating" => "rating".to_string(),
+        "installs" => "installs".to_string(),
+        "installsAllTime" => "installsAllTime".to_string(),
+        _ => "trending".to_string(),
+    };
+
+    let raw = clawhub_exec_output(&[
+        "explore",
+        "--json",
+        "--limit",
+        fetch_limit_str.as_str(),
+        "--sort",
+        normalized_sort.as_str(),
+    ])?;
+    let payload: serde_json::Value = parse_clawhub_json(&raw)?;
+    let items = payload
+        .get("items")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut out = Vec::new();
+    for item in items {
+        let slug = item
+            .get("slug")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if !is_safe_component(&slug) {
+            continue;
+        }
+        let display_name = item
+            .get("displayName")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&slug)
+            .trim()
+            .to_string();
+        let summary = item
+            .get("summary")
+            .and_then(|v| v.as_str())
+            .unwrap_or("ClawHub skill")
+            .trim()
+            .to_string();
+        let latest_version = item
+            .get("latestVersion")
+            .and_then(|v| v.get("version"))
+            .and_then(|v| v.as_str())
+            .or_else(|| {
+                item.get("tags")
+                    .and_then(|v| v.get("latest"))
+                    .and_then(|v| v.as_str())
+            })
+            .map(|v| v.to_string());
+        let downloads = item
+            .get("stats")
+            .and_then(|v| v.get("downloads"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let installs_all_time = item
+            .get("stats")
+            .and_then(|v| v.get("installsAllTime"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let stars = item
+            .get("stats")
+            .and_then(|v| v.get("stars"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let updated_at = item.get("updatedAt").and_then(|v| v.as_u64());
+
+        if !query_lower.is_empty() {
+            let haystack = format!("{} {} {}", slug, display_name, summary).to_lowercase();
+            if !haystack.contains(&query_lower) {
+                continue;
+            }
+        }
+
+        out.push(ClawhubCatalogSkill {
+            slug,
+            display_name,
+            summary,
+            latest_version,
+            downloads,
+            installs_all_time,
+            stars,
+            updated_at,
+        });
+    }
+
+    if out.len() > max_results as usize {
+        out.truncate(max_results as usize);
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn get_clawhub_skill_details(slug: String) -> Result<ClawhubSkillDetails, String> {
+    let skill_slug = slug.trim().to_string();
+    if !is_safe_slug(&skill_slug) {
+        return Err("Invalid skill slug".to_string());
+    }
+
+    let raw = clawhub_exec_output(&["inspect", skill_slug.as_str(), "--json"])?;
+    let payload: serde_json::Value = parse_clawhub_json(&raw)?;
+    let skill = payload
+        .get("skill")
+        .ok_or_else(|| "Malformed ClawHub inspect response: missing skill".to_string())?;
+
+    let display_name = skill
+        .get("displayName")
+        .and_then(|v| v.as_str())
+        .unwrap_or(skill_slug.as_str())
+        .trim()
+        .to_string();
+    let summary = skill
+        .get("summary")
+        .and_then(|v| v.as_str())
+        .unwrap_or("ClawHub skill")
+        .trim()
+        .to_string();
+    let latest_version = payload
+        .get("latestVersion")
+        .and_then(|v| v.get("version"))
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            skill
+                .get("tags")
+                .and_then(|v| v.get("latest"))
+                .and_then(|v| v.as_str())
+        })
+        .map(|v| v.to_string());
+    let changelog = payload
+        .get("latestVersion")
+        .and_then(|v| v.get("changelog"))
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_string());
+    let owner_handle = payload
+        .get("owner")
+        .and_then(|v| v.get("handle"))
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_string());
+    let owner_display_name = payload
+        .get("owner")
+        .and_then(|v| v.get("displayName"))
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_string());
+    let downloads = skill
+        .get("stats")
+        .and_then(|v| v.get("downloads"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let installs_all_time = skill
+        .get("stats")
+        .and_then(|v| v.get("installsAllTime"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let stars = skill
+        .get("stats")
+        .and_then(|v| v.get("stars"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let updated_at = skill.get("updatedAt").and_then(|v| v.as_u64());
+
+    Ok(ClawhubSkillDetails {
+        slug: skill_slug,
+        display_name,
+        summary,
+        latest_version,
+        changelog,
+        owner_handle,
+        owner_display_name,
+        downloads,
+        installs_all_time,
+        stars,
+        updated_at,
+    })
+}
+
 fn scanner_unavailable_result() -> PluginScanResult {
     PluginScanResult {
         scan_id: None,
@@ -3439,29 +3829,24 @@ pub async fn scan_and_install_clawhub_skill(
         let _ = docker_exec_output(&["exec", OPENCLAW_CONTAINER, "rm", "-rf", "--", root]);
     };
 
-    let fetch_result = docker_command()
-        .args([
-            "exec",
-            OPENCLAW_CONTAINER,
-            "npx",
-            "-y",
-            "clawhub",
-            "install",
-            &trimmed_slug,
-            "--workdir",
-            &temp_root,
-            "--dir",
-            "skills",
-            "--no-input",
-            "--force",
-        ])
-        .output()
-        .map_err(|e| format!("Failed to run ClawHub install: {}", e))?;
+    let fetch_result = clawhub_exec(&[
+        "install",
+        &trimmed_slug,
+        "--workdir",
+        &temp_root,
+        "--dir",
+        "skills",
+        "--no-input",
+        "--force",
+    ])
+    .map_err(|e| format!("Failed to run ClawHub install: {}", e))?;
 
     if !fetch_result.status.success() {
-        let stderr = String::from_utf8_lossy(&fetch_result.stderr);
         cleanup(&temp_root);
-        return Err(format!("ClawHub install failed: {}", stderr));
+        return Err(format!(
+            "ClawHub install failed: {}",
+            command_output_error(&fetch_result)
+        ));
     }
 
     let (downloaded_path, detected_skill_id) =
@@ -3500,24 +3885,16 @@ pub async fn scan_and_install_clawhub_skill(
         });
     }
 
-    let install = match docker_command()
-        .args([
-            "exec",
-            OPENCLAW_CONTAINER,
-            "npx",
-            "-y",
-            "clawhub",
-            "install",
-            &trimmed_slug,
-            "--workdir",
-            WORKSPACE_ROOT,
-            "--dir",
-            "skills",
-            "--no-input",
-            "--force",
-        ])
-        .output()
-    {
+    let install = match clawhub_exec(&[
+        "install",
+        &trimmed_slug,
+        "--workdir",
+        WORKSPACE_ROOT,
+        "--dir",
+        "skills",
+        "--no-input",
+        "--force",
+    ]) {
         Ok(output) => output,
         Err(err) => {
             cleanup(&temp_root);
@@ -3528,8 +3905,7 @@ pub async fn scan_and_install_clawhub_skill(
     cleanup(&temp_root);
 
     if !install.status.success() {
-        let stderr = String::from_utf8_lossy(&install.stderr);
-        return Err(format!("Skill install failed: {}", stderr));
+        return Err(format!("Skill install failed: {}", command_output_error(&install)));
     }
 
     Ok(ClawhubInstallResult {

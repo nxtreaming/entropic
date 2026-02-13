@@ -54,6 +54,7 @@ export function ScanResultModal({
 
   const isBlocked = scanResult && !scanResult.is_safe &&
     ["CRITICAL", "HIGH"].includes(scanResult.max_severity);
+  const scannerUnavailable = !!scanResult && !scanResult.scanner_available;
 
   function toggleFinding(idx: number) {
     const next = new Set(expandedFindings);
@@ -99,9 +100,11 @@ export function ScanResultModal({
           <>
             {/* Summary badge */}
             <div className={clsx("rounded-lg p-4 mb-4 flex items-center gap-3",
-              scanResult.is_safe ? "bg-green-50" : isBlocked ? "bg-red-50" : "bg-yellow-50"
+              scannerUnavailable ? "bg-amber-50" : scanResult.is_safe ? "bg-green-50" : isBlocked ? "bg-red-50" : "bg-yellow-50"
             )}>
-              {scanResult.is_safe ? (
+              {scannerUnavailable ? (
+                <AlertTriangle className="w-6 h-6 text-amber-600 shrink-0" />
+              ) : scanResult.is_safe ? (
                 <ShieldCheck className="w-6 h-6 text-green-600 shrink-0" />
               ) : isBlocked ? (
                 <ShieldAlert className="w-6 h-6 text-red-600 shrink-0" />
@@ -110,15 +113,17 @@ export function ScanResultModal({
               )}
               <div>
                 <p className={clsx("font-medium",
-                  scanResult.is_safe ? "text-green-700" : isBlocked ? "text-red-700" : "text-yellow-700"
+                  scannerUnavailable ? "text-amber-700" : scanResult.is_safe ? "text-green-700" : isBlocked ? "text-red-700" : "text-yellow-700"
                 )}>
-                  {scanResult.is_safe
+                  {scannerUnavailable
+                    ? "Scanner unavailable"
+                    : scanResult.is_safe
                     ? "No issues found"
                     : `${scanResult.findings_count} issue(s) found — ${scanResult.max_severity} severity`}
                 </p>
                 {!scanResult.scanner_available && (
                   <p className="text-xs text-[var(--text-tertiary)] mt-1">
-                    Scanner unavailable — skipped security check
+                    Security scan was skipped. Start the scanner image/container and retry.
                   </p>
                 )}
               </div>

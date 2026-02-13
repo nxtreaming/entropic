@@ -15,7 +15,14 @@ import { Store as TauriStore } from "@tauri-apps/plugin-store";
 import type { Page } from "../components/Layout";
 
 // NOTE: Most type definitions are omitted for brevity in this example
-type Message = { id: string; role: "user" | "assistant"; content: string; kind?: "toolResult"; toolName?: string };
+type Message = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  kind?: "toolResult";
+  toolName?: string;
+  sentAt?: number | null;
+};
 export type ChatSession = { key: string; label?: string; displayName?: string; derivedTitle?: string; updatedAt?: number | null };
 type Provider = { id: string; name: string; icon: string; placeholder: string; keyUrl: string };
 type PendingAttachment = { id: string; fileName: string; tempPath: string; savedPath?: string };
@@ -210,6 +217,95 @@ function parseToolPayloads(raw: string): {
   return { cleanText: clean.trim(), events, errors, hadToolPayload: true };
 }
 
+function stripConversationMetadata(raw: string): string {
+  if (!raw) return "";
+  let text = raw;
+  const prefix = /^\s*Conversation info\s*\(untrusted metadata\)\s*:/i;
+  if (!prefix.test(text)) {
+    return text;
+  }
+
+  // Remove optional fenced JSON metadata block at the beginning.
+  text = text.replace(
+    /^\s*Conversation info\s*\(untrusted metadata\)\s*:\s*```json[\s\S]*?```\s*/i,
+    ""
+  );
+
+  // Fallback for non-fenced leading JSON metadata.
+  text = text.replace(
+    /^\s*Conversation info\s*\(untrusted metadata\)\s*:\s*\{[\s\S]*?\}\s*/i,
+    ""
+  );
+
+  // If only the header line is present, remove it.
+  text = text.replace(/^\s*Conversation info\s*\(untrusted metadata\)\s*:\s*/i, "");
+
+  return text.trimStart();
+}
+
+function parseUtcBracketTimestamp(raw: string): { text: string; sentAt: number | null } {
+  if (!raw) return { text: "", sentAt: null };
+  const match = raw.match(/^\s*\[[A-Za-z]{3}\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}(?::\d{2})?)\s+UTC\]\s*/);
+  if (!match) return { text: raw, sentAt: null };
+  const iso = `${match[1]}T${match[2]}Z`;
+  const parsed = Date.parse(iso);
+  return {
+    text: raw.slice(match[0].length),
+    sentAt: Number.isNaN(parsed) ? null : parsed,
+  };
+}
+
+function toTimestampMs(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return value < 1_000_000_000_000 ? Math.round(value * 1000) : Math.round(value);
+  }
+  if (typeof value === "string") {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return numeric < 1_000_000_000_000 ? Math.round(numeric * 1000) : Math.round(numeric);
+    }
+    const parsed = Date.parse(value);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return null;
+}
+
+function extractMessageTimestamp(message: GatewayMessage): number | null {
+  const candidates = [
+    message.createdAt,
+    message.created_at,
+    message.timestamp,
+    message.sentAt,
+    message.sent_at,
+    message.time,
+    message.ts,
+  ];
+  for (const candidate of candidates) {
+    const timestamp = toTimestampMs(candidate);
+    if (timestamp) return timestamp;
+  }
+  return null;
+}
+
+function normalizeUserContent(content: string, fallbackTimestamp?: number | null): { content: string; sentAt: number | null } {
+  const withoutMeta = stripConversationMetadata(content).trim();
+  const parsedPrefix = parseUtcBracketTimestamp(withoutMeta);
+  return {
+    content: parsedPrefix.text.trim(),
+    sentAt: fallbackTimestamp ?? parsedPrefix.sentAt ?? null,
+  };
+}
+
+function formatMessageTime(sentAt?: number | null): string {
+  if (!sentAt) return "";
+  const date = new Date(sentAt);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
+}
+
 function formatEventRange(start?: string, end?: string): { date?: string; time?: string } {
   if (!start) return {};
   const startDate = new Date(start);
@@ -258,14 +354,17 @@ function extractMessageText(message: GatewayMessage): { text: string; hasText: b
 function normalizeGatewayMessage(message: GatewayMessage, id: string): Message | null {
   const roleRaw = typeof message?.role === "string" ? message.role.toLowerCase() : "assistant";
   const { text, hasText, hasNonText } = extractMessageText(message);
+  const messageTimestamp = extractMessageTimestamp(message);
   if (roleRaw === "user") {
     if (!hasText) return null;
-    return { id, role: "user", content: text };
+    const normalized = normalizeUserContent(text, messageTimestamp);
+    if (!normalized.content) return null;
+    return { id, role: "user", content: normalized.content, sentAt: normalized.sentAt };
   }
   if (roleRaw === "assistant") {
     if (!hasText && !hasNonText) return null;
     if (!hasText) return null;
-    return { id, role: "assistant", content: text };
+    return { id, role: "assistant", content: text, sentAt: messageTimestamp };
   }
   if (roleRaw === "toolresult" || roleRaw === "tool_result" || roleRaw === "tool") {
     if (!hasText) return null;
@@ -275,6 +374,7 @@ function normalizeGatewayMessage(message: GatewayMessage, id: string): Message |
       content: text,
       kind: "toolResult",
       toolName: typeof message.toolName === "string" ? message.toolName : undefined,
+      sentAt: messageTimestamp,
     };
   }
   return null;
@@ -699,10 +799,26 @@ export function Chat({
         const existingIdx = prev.findIndex(m => m.id === event.runId && m.role === "assistant");
         if (existingIdx >= 0) {
           const updated = [...prev];
-          updated[existingIdx] = { ...updated[existingIdx], content: text };
+          updated[existingIdx] = {
+            ...updated[existingIdx],
+            content: text,
+            kind: normalized?.kind ?? updated[existingIdx].kind,
+            toolName: normalized?.toolName ?? updated[existingIdx].toolName,
+            sentAt: updated[existingIdx].sentAt ?? normalized?.sentAt ?? Date.now(),
+          };
           return updated;
         }
-        return [...prev, { id: event.runId, role: "assistant", content: text }];
+        return [
+          ...prev,
+          {
+            id: event.runId,
+            role: "assistant",
+            content: text,
+            kind: normalized?.kind,
+            toolName: normalized?.toolName,
+            sentAt: normalized?.sentAt ?? Date.now(),
+          },
+        ];
       });
       if (normalized && normalized.kind === "toolResult" && event.runId) {
         const timings = runTimingsRef.current[event.runId];
@@ -835,7 +951,7 @@ export function Chat({
     const messageContent = content || message.trim();
     if (!currentSession || !connected || isLoading || (!messageContent && pendingAttachments.length === 0)) return;
 
-    const userMessage: Message = { id: crypto.randomUUID(), role: "user", content: messageContent };
+    const userMessage: Message = { id: crypto.randomUUID(), role: "user", content: messageContent, sentAt: Date.now() };
     setMessages(prev => [...prev, userMessage]);
 
     // Persist the user message immediately so it survives navigation
@@ -1257,14 +1373,34 @@ export function Chat({
               </div>
             </div>
           ) : null}
-          {messages.map(msg => (
-            <div key={msg.id} className={clsx("flex", msg.role === "user" ? "justify-end" : "justify-start")}>
-              <div className={clsx("max-w-[85%] px-4 py-2.5 rounded-2xl",
-                msg.role === "user" ? "bg-[var(--purple-accent)] text-white" : "bg-[var(--bg-tertiary)] text-[var(--text-primary)]")}>
-              {msg.role === "assistant" ? renderAssistantContent(msg) : <p className="whitespace-pre-wrap">{msg.content}</p>}
+          {messages.map(msg => {
+            const normalizedUser = msg.role === "user" ? normalizeUserContent(msg.content, msg.sentAt) : null;
+            const bodyContent = msg.role === "user" ? normalizedUser?.content ?? "" : msg.content;
+            const messageTime = formatMessageTime(msg.role === "user" ? normalizedUser?.sentAt : msg.sentAt);
+            if (msg.role === "user" && !bodyContent) {
+              return null;
+            }
+            return (
+              <div key={msg.id} className={clsx("flex", msg.role === "user" ? "justify-end" : "justify-start")}>
+                <div className={clsx("max-w-[85%]")}>
+                  <div className={clsx("px-4 py-2.5 rounded-2xl",
+                    msg.role === "user" ? "bg-[var(--purple-accent)] text-white" : "bg-[var(--bg-tertiary)] text-[var(--text-primary)]")}>
+                    {msg.role === "assistant" ? renderAssistantContent(msg) : <p className="whitespace-pre-wrap">{bodyContent}</p>}
+                  </div>
+                  {messageTime ? (
+                    <div
+                      className={clsx(
+                        "mt-1 px-1 text-[11px] text-[var(--text-tertiary)]",
+                        msg.role === "user" ? "text-right" : "text-left"
+                      )}
+                    >
+                      {messageTime}
+                    </div>
+                  ) : null}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
           {isLoading && (
             <div className="flex justify-start">
               <div className="px-4 py-2.5 rounded-2xl bg-[var(--bg-tertiary)]">

@@ -12,12 +12,13 @@ set -euo pipefail
 # Usage:
 #   ./scripts/bundle-runtime-image.sh           # export openclaw-runtime:latest
 #   IMAGE=myregistry/rt:v1 ./scripts/bundle-runtime-image.sh  # custom image
+#   IMAGE=nova-skill-scanner:latest OUTPUT=src-tauri/resources/nova-skill-scanner.tar.gz ./scripts/bundle-runtime-image.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 RESOURCES_DIR="$PROJECT_ROOT/src-tauri/resources"
 IMAGE="${IMAGE:-openclaw-runtime:latest}"
-OUTPUT="$RESOURCES_DIR/openclaw-runtime.tar.gz"
+OUTPUT="${OUTPUT:-$RESOURCES_DIR/openclaw-runtime.tar.gz}"
 
 echo "=== Exporting Docker image for bundling ==="
 echo "Image: $IMAGE"

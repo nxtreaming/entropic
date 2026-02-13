@@ -102,13 +102,29 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|_app_handle, event| match event {
+        .run(|app_handle, event| match event {
             RunEvent::WindowEvent {
-                event: WindowEvent::CloseRequested { .. },
+                label,
+                event: WindowEvent::CloseRequested { api, .. },
                 ..
             } => {
-                println!("[Nova] Window close requested — stopping containers...");
-                commands::cleanup_on_exit();
+                // On macOS, closing window should just hide it (keep app running in dock)
+                // Only stop containers on actual app quit (Cmd+Q)
+                #[cfg(target_os = "macos")]
+                {
+                    println!("[Nova] Window close requested — hiding window (containers stay running)");
+                    if let Some(window) = app_handle.get_webview_window(&label) {
+                        let _ = window.hide();
+                    }
+                    api.prevent_close();
+                }
+
+                // On other platforms, closing window exits the app
+                #[cfg(not(target_os = "macos"))]
+                {
+                    println!("[Nova] Window close requested — stopping containers...");
+                    commands::cleanup_on_exit();
+                }
             }
             RunEvent::Exit => {
                 println!("[Nova] App exiting — stopping containers...");

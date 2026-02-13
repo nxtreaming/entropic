@@ -5,7 +5,32 @@ echo "🧹 Cleaning up for fresh end-user experience test..."
 echo ""
 
 # ============================================
-# 1. CLEAN NOVA'S ISOLATED RUNTIME
+# 1. KILL RUNNING NOVA PROCESSES & UNMOUNT DMGS
+# ============================================
+
+echo "🛑 Stopping all Nova processes..."
+
+# Kill all Nova app instances
+echo "  → Killing Nova processes..."
+pkill -9 -i nova 2>/dev/null || true
+
+# Kill Colima and Lima processes
+echo "  → Killing Colima/Lima processes..."
+pkill -9 limactl 2>/dev/null || true
+pkill -9 colima 2>/dev/null || true
+
+# Unmount any mounted Nova DMGs
+echo "  → Unmounting Nova DMGs..."
+for dmg in "/Volumes/Nova"*; do
+    if [ -d "$dmg" ]; then
+        hdiutil detach "$dmg" -force 2>/dev/null || true
+    fi
+done
+
+echo "✅ All processes stopped and DMGs unmounted"
+
+# ============================================
+# 2. CLEAN NOVA'S ISOLATED RUNTIME
 # ============================================
 
 echo "🗑️  Cleaning Nova's isolated runtime..."
@@ -17,7 +42,7 @@ rm -rf "$HOME/.nova/colima"
 echo "✅ Nova runtime cleaned"
 
 # ============================================
-# 2. CLEAN GLOBAL COLIMA (optional)
+# 3. CLEAN GLOBAL COLIMA (optional)
 # ============================================
 
 echo ""
@@ -38,7 +63,7 @@ rm -rf ~/.lima
 echo "✅ Global Colima state cleaned"
 
 # ============================================
-# 3. DOCKER CLEANUP
+# 4. DOCKER CLEANUP
 # ============================================
 
 echo ""
@@ -86,7 +111,7 @@ else
 fi
 
 # ============================================
-# 4. PROJECT BUILD ARTIFACTS
+# 5. PROJECT BUILD ARTIFACTS
 # ============================================
 
 echo ""
@@ -116,7 +141,7 @@ echo "  → Running cargo clean..."
 cargo clean --manifest-path src-tauri/Cargo.toml 2>/dev/null || true
 
 # ============================================
-# 5. REMOVE OLD BUNDLED RESOURCES
+# 6. REMOVE OLD BUNDLED RESOURCES
 # ============================================
 
 echo ""
@@ -126,7 +151,7 @@ rm -rf src-tauri/resources/share/*
 rm -f src-tauri/resources/openclaw-runtime.tar.gz
 
 # ============================================
-# 6. CLEAN APP LOGS
+# 7. CLEAN APP LOGS
 # ============================================
 
 echo ""

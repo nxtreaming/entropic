@@ -38,6 +38,7 @@ const MAX_PERSISTED_MESSAGES = 200;
 type PersistedChatData = {
   sessions: ChatSession[];
   messages: Record<string, Message[]>; // sessionKey -> messages
+  drafts: Record<string, string>; // sessionKey -> unsent draft
   currentSession: string | null;
 };
 
@@ -56,12 +57,23 @@ async function persistChatData(data: PersistedChatData): Promise<void> {
     const trimmed: PersistedChatData = {
       sessions: data.sessions.slice(0, MAX_PERSISTED_SESSIONS),
       messages: {},
+      drafts: {},
       currentSession: data.currentSession,
     };
     for (const s of trimmed.sessions) {
       const msgs = data.messages[s.key];
       if (msgs && msgs.length > 0) {
         trimmed.messages[s.key] = msgs.slice(-MAX_PERSISTED_MESSAGES);
+      }
+      const draft = data.drafts[s.key];
+      if (typeof draft === "string" && draft.length > 0) {
+        trimmed.drafts[s.key] = draft;
+      }
+    }
+    if (trimmed.currentSession) {
+      const currentDraft = data.drafts[trimmed.currentSession];
+      if (typeof currentDraft === "string" && currentDraft.length > 0) {
+        trimmed.drafts[trimmed.currentSession] = currentDraft;
       }
     }
     await store.set("chatData", trimmed);
@@ -243,6 +255,99 @@ function stripConversationMetadata(raw: string): string {
   return text.trimStart();
 }
 
+function stripInlineClawdbotMetadata(raw: string): string {
+  let result = "";
+  let cursor = 0;
+
+  while (cursor < raw.length) {
+    const remaining = raw.slice(cursor);
+    const match = /metadata\s*:/i.exec(remaining);
+    if (!match) {
+      result += remaining;
+      break;
+    }
+
+    const matchStart = cursor + match.index;
+    const labelEnd = matchStart + match[0].length;
+    result += raw.slice(cursor, matchStart);
+
+    let i = labelEnd;
+    while (i < raw.length && /\s/.test(raw[i])) i += 1;
+    if (raw[i] !== "{") {
+      result += raw.slice(matchStart, labelEnd);
+      cursor = labelEnd;
+      continue;
+    }
+
+    const objectStart = i;
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    let objectEnd = -1;
+
+    for (; i < raw.length; i += 1) {
+      const ch = raw[i];
+      if (inString) {
+        if (escape) {
+          escape = false;
+        } else if (ch === "\\") {
+          escape = true;
+        } else if (ch === "\"") {
+          inString = false;
+        }
+        continue;
+      }
+      if (ch === "\"") {
+        inString = true;
+        continue;
+      }
+      if (ch === "{") depth += 1;
+      if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          objectEnd = i;
+          break;
+        }
+      }
+    }
+
+    if (objectEnd < 0) {
+      result += raw.slice(matchStart);
+      break;
+    }
+
+    const objectText = raw.slice(objectStart, objectEnd + 1);
+    if (/[\"']?clawdbot[\"']?\s*:/i.test(objectText)) {
+      cursor = objectEnd + 1;
+      while (cursor < raw.length && raw[cursor] === " ") cursor += 1;
+      continue;
+    }
+
+    result += raw.slice(matchStart, objectEnd + 1);
+    cursor = objectEnd + 1;
+  }
+
+  return result;
+}
+
+function sanitizeAssistantDisplayContent(raw: string): string {
+  if (!raw) return "";
+  let text = stripConversationMetadata(raw);
+
+  // Hide OpenClaw internal skill manifest metadata payloads (machine format).
+  text = text.replace(
+    /^\s*metadata:\s*\{[\s\S]*?"clawdbot"[\s\S]*?\}\s*$/gim,
+    ""
+  );
+  text = text.replace(
+    /^\s*metadata:\s*(?:\r?\n[ \t]+[^\n]*)+/gim,
+    (block) => (/(?:^|\n)\s*clawdbot\s*:/i.test(block) ? "" : block)
+  );
+  text = stripInlineClawdbotMetadata(text);
+
+  return text.replace(/\n{3,}/g, "\n\n").trim();
+}
+
 function parseUtcBracketTimestamp(raw: string): { text: string; sentAt: number | null } {
   if (!raw) return { text: "", sentAt: null };
   const match = raw.match(/^\s*\[[A-Za-z]{3}\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}(?::\d{2})?)\s+UTC\]\s*/);
@@ -364,14 +469,18 @@ function normalizeGatewayMessage(message: GatewayMessage, id: string): Message |
   if (roleRaw === "assistant") {
     if (!hasText && !hasNonText) return null;
     if (!hasText) return null;
-    return { id, role: "assistant", content: text, sentAt: messageTimestamp };
+    const cleanText = sanitizeAssistantDisplayContent(text);
+    if (!cleanText) return null;
+    return { id, role: "assistant", content: cleanText, sentAt: messageTimestamp };
   }
   if (roleRaw === "toolresult" || roleRaw === "tool_result" || roleRaw === "tool") {
     if (!hasText) return null;
+    const cleanText = sanitizeAssistantDisplayContent(text);
+    if (!cleanText) return null;
     return {
       id,
       role: "assistant",
-      content: text,
+      content: cleanText,
       kind: "toolResult",
       toolName: typeof message.toolName === "string" ? message.toolName : undefined,
       sentAt: messageTimestamp,
@@ -472,7 +581,7 @@ export function Chat({
   const { isAuthenticated, isAuthConfigured } = useAuth();
   const proxyEnabled = isAuthConfigured && isAuthenticated && !useLocalKeys;
   const [messages, setMessages] = useState<Message[]>([]);
-  const [message, setMessage] = useState("");
+  const [draftsBySession, setDraftsBySession] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [connected, setConnected] = useState(false);
@@ -511,8 +620,11 @@ export function Chat({
   });
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const clientRef = useRef<GatewayClient | null>(null);
   const currentSessionRef = useRef<string | null>(null);
+  const draftsRef = useRef<Record<string, string>>({});
+  const handledRequestedSessionRef = useRef<string | null>(null);
   const handlersRef = useRef<{
     connected?: () => void;
     disconnected?: () => void;
@@ -549,7 +661,9 @@ export function Chat({
       if (cached.sessions.length > 0) {
         setSessions(cached.sessions);
         sessionMessagesRef.current = cached.messages || {};
+        setDraftsBySession(cached.drafts || {});
         const restoreKey = cached.currentSession || cached.sessions[0].key;
+        currentSessionRef.current = restoreKey;
         setCurrentSession(restoreKey);
         const restoredMsgs = cached.messages[restoreKey] || [];
         setMessages(restoredMsgs);
@@ -567,9 +681,11 @@ export function Chat({
       const sessionsSnap = sessionsRef.current;
       const currentSnap = currentSessionRef.current;
       const messagesSnap = { ...sessionMessagesRef.current };
+      const draftsSnap = { ...draftsRef.current };
       persistChatData({
         sessions: sessionsSnap,
         messages: messagesSnap,
+        drafts: draftsSnap,
         currentSession: currentSnap,
       });
     }, 500);
@@ -588,6 +704,10 @@ export function Chat({
     }
   }, [messages, currentSession]);
 
+  useEffect(() => {
+    draftsRef.current = draftsBySession;
+  }, [draftsBySession]);
+
   // Persist on unmount (navigation away)
   useEffect(() => {
     return () => {
@@ -595,10 +715,12 @@ export function Chat({
       const sessionsSnap = sessionsRef.current;
       const currentSnap = currentSessionRef.current;
       const messagesSnap = { ...sessionMessagesRef.current };
+      const draftsSnap = { ...draftsRef.current };
       if (sessionsSnap.length > 0) {
         persistChatData({
           sessions: sessionsSnap,
           messages: messagesSnap,
+          drafts: draftsSnap,
           currentSession: currentSnap,
         });
       }
@@ -620,13 +742,18 @@ export function Chat({
 
   // Handle session selection from sidebar
   useEffect(() => {
-    if (!requestedSession || !clientRef.current) return;
+    if (!requestedSession) {
+      handledRequestedSessionRef.current = null;
+      return;
+    }
+    if (handledRequestedSessionRef.current === requestedSession) return;
+    handledRequestedSessionRef.current = requestedSession;
     if (requestedSession === "__new__") {
       createNewSession();
     } else if (requestedSession !== currentSession) {
-      selectSession(requestedSession);
+      void selectSession(requestedSession);
     }
-  }, [requestedSession]);
+  }, [requestedSession, currentSession]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -777,6 +904,12 @@ export function Chat({
   }
 
   function handleChatEvent(event: any) {
+    const composer = textareaRef.current;
+    const keepComposerFocus = !!composer && document.activeElement === composer;
+    const selection = keepComposerFocus && composer
+      ? { start: composer.selectionStart, end: composer.selectionEnd }
+      : null;
+
     setLastChatEvent(event);
     if (event?.runId) {
       lastEventByRunIdRef.current[event.runId] = Date.now();
@@ -820,6 +953,19 @@ export function Chat({
           },
         ];
       });
+      if (keepComposerFocus) {
+        requestAnimationFrame(() => {
+          if (!textareaRef.current) return;
+          textareaRef.current.focus();
+          if (selection) {
+            try {
+              textareaRef.current.setSelectionRange(selection.start, selection.end);
+            } catch {
+              // ignore selection restore failures
+            }
+          }
+        });
+      }
       if (normalized && normalized.kind === "toolResult" && event.runId) {
         const timings = runTimingsRef.current[event.runId];
         if (timings && !timings.toolSeenAt) {
@@ -903,22 +1049,32 @@ export function Chat({
     }
 
     if (merged.length > 0) {
-      // Prefer restoring the previously active session
+      // Prefer the active session, then persisted session, then first in list.
+      const activeKey = currentSessionRef.current;
       const preferredKey = cached?.currentSession;
-      const target = preferredKey && merged.find(s => s.key === preferredKey)
-        ? preferredKey
-        : merged[0].key;
-      selectSession(target);
+      const target =
+        activeKey && merged.find((s) => s.key === activeKey)
+          ? activeKey
+          : preferredKey && merged.find((s) => s.key === preferredKey)
+            ? preferredKey
+            : merged[0].key;
+      await selectSession(target);
     } else {
       createNewSession();
     }
   }
 
   async function selectSession(sessionId: string) {
+    currentSessionRef.current = sessionId;
     setCurrentSession(sessionId);
     // Try to load from gateway first
-    const history = await clientRef.current?.getChatHistory(sessionId, HISTORY_LIMIT) || [];
-    if (currentSessionRef.current && currentSessionRef.current !== sessionId) {
+    let history: GatewayMessage[] = [];
+    try {
+      history = await clientRef.current?.getChatHistory(sessionId, HISTORY_LIMIT) || [];
+    } catch (err) {
+      addDiag(`history load failed for session=${sessionId}: ${String(err)}`);
+    }
+    if (currentSessionRef.current !== sessionId) {
       return;
     }
     let msgs: Message[];
@@ -932,24 +1088,28 @@ export function Chat({
     }
     setMessages(msgs);
     sessionMessagesRef.current[sessionId] = msgs;
-    if (msgs.length > 0) {
-      setShowWelcome(false);
-    }
+    setShowWelcome(msgs.length === 0);
     schedulePersist();
   }
 
   function createNewSession() {
-    const sessionKey = clientRef.current!.createSessionKey();
+    const sessionKey = clientRef.current?.createSessionKey() || crypto.randomUUID();
+    currentSessionRef.current = sessionKey;
     setCurrentSession(sessionKey);
     setMessages([]);
     sessionMessagesRef.current[sessionKey] = [];
+    setDraftsBySession((prev) => ({ ...prev, [sessionKey]: "" }));
     setShowWelcome(true);
     schedulePersist();
   }
 
   async function handleSend(content?: string) {
-    const messageContent = content || message.trim();
+    const sendSession = currentSession;
+    const currentDraft = sendSession ? (draftsRef.current[sendSession] || "") : "";
+    const messageContent = content || currentDraft.trim();
     if (!currentSession || !connected || isLoading || (!messageContent && pendingAttachments.length === 0)) return;
+
+    const failedDraftRestore = !content ? currentDraft : null;
 
     const userMessage: Message = { id: crypto.randomUUID(), role: "user", content: messageContent, sentAt: Date.now() };
     setMessages(prev => [...prev, userMessage]);
@@ -966,7 +1126,9 @@ export function Chat({
       schedulePersist();
     }
 
-    setMessage("");
+    if (!content && sendSession) {
+      setDraftsBySession((prev) => ({ ...prev, [sendSession]: "" }));
+    }
     setShowWelcome(false);
     setIsLoading(true);
     setError(null);
@@ -1029,6 +1191,9 @@ export function Chat({
       setError(e instanceof Error ? e.message : "Send failed");
       setIsLoading(false);
       addDiag(`send failed: ${e instanceof Error ? e.message : "unknown"}`);
+      if (failedDraftRestore !== null && sendSession && currentSessionRef.current === sendSession) {
+        setDraftsBySession((prev) => ({ ...prev, [sendSession]: failedDraftRestore }));
+      }
     }
   }
 
@@ -1094,8 +1259,10 @@ export function Chat({
     handleSend(`I've connected ${channelName}. Please send me a test message!`);
   }
 
-  function renderAssistantContent(message: Message) {
-    const payload = parseToolPayloads(message.content);
+  type AssistantRenderPayload = ReturnType<typeof parseToolPayloads>;
+
+  function renderAssistantContent(message: Message, precomputedPayload?: AssistantRenderPayload) {
+    const payload = precomputedPayload ?? parseToolPayloads(sanitizeAssistantDisplayContent(message.content));
     if (payload.hadToolPayload && message.id) {
       const timings = runTimingsRef.current[message.id];
       if (timings && !timings.toolSeenAt) {
@@ -1104,7 +1271,7 @@ export function Chat({
       }
     }
     if (!payload.events.length && !payload.errors.length) {
-      return <MarkdownContent content={message.content} />;
+      return <MarkdownContent content={payload.cleanText} />;
     }
     return (
       <div className="space-y-2">
@@ -1276,6 +1443,7 @@ export function Chat({
   if (isConnecting) return renderConnecting();
   if (!connectedProvider && !proxyEnabled) return renderNoProvider();
   const autoStartExpected = proxyEnabled && !gatewayRunning;
+  const activeDraft = currentSession ? (draftsBySession[currentSession] || "") : "";
 
   // Main Chat UI
   return (
@@ -1375,9 +1543,21 @@ export function Chat({
           ) : null}
           {messages.map(msg => {
             const normalizedUser = msg.role === "user" ? normalizeUserContent(msg.content, msg.sentAt) : null;
+            const assistantPayload = msg.role === "assistant"
+              ? parseToolPayloads(sanitizeAssistantDisplayContent(msg.content))
+              : null;
             const bodyContent = msg.role === "user" ? normalizedUser?.content ?? "" : msg.content;
             const messageTime = formatMessageTime(msg.role === "user" ? normalizedUser?.sentAt : msg.sentAt);
             if (msg.role === "user" && !bodyContent) {
+              return null;
+            }
+            if (
+              msg.role === "assistant" &&
+              assistantPayload &&
+              !assistantPayload.cleanText &&
+              assistantPayload.events.length === 0 &&
+              assistantPayload.errors.length === 0
+            ) {
               return null;
             }
             return (
@@ -1385,7 +1565,7 @@ export function Chat({
                 <div className={clsx("max-w-[85%]")}>
                   <div className={clsx("px-4 py-2.5 rounded-2xl",
                     msg.role === "user" ? "bg-[var(--purple-accent)] text-white" : "bg-[var(--bg-tertiary)] text-[var(--text-primary)]")}>
-                    {msg.role === "assistant" ? renderAssistantContent(msg) : <p className="whitespace-pre-wrap">{bodyContent}</p>}
+                    {msg.role === "assistant" ? renderAssistantContent(msg, assistantPayload || undefined) : <p className="whitespace-pre-wrap">{bodyContent}</p>}
                   </div>
                   {messageTime ? (
                     <div
@@ -1421,12 +1601,22 @@ export function Chat({
         }}>
         <div className="max-w-3xl mx-auto flex items-end gap-2">
           <button className="btn-secondary !p-2.5"><Paperclip className="w-5 h-5" /></button>
-          <textarea value={message} onChange={e => setMessage(e.target.value)}
+          <textarea
+            ref={textareaRef}
+            value={activeDraft}
+            onChange={e => {
+              if (!currentSession) return;
+              const nextValue = e.target.value;
+              setDraftsBySession((prev) => {
+                if ((prev[currentSession] || "") === nextValue) return prev;
+                return { ...prev, [currentSession]: nextValue };
+              });
+            }}
             onKeyDown={e => {if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }}}
             placeholder="Message your assistant..." rows={1}
             className="form-input flex-1 resize-none leading-tight"
           />
-          <button onClick={() => handleSend()} disabled={!message.trim() || isLoading} className="btn-primary !p-2.5 !bg-[var(--purple-accent)] hover:!bg-purple-700 text-white"><Send className="w-5 h-5" /></button>
+          <button onClick={() => handleSend()} disabled={!activeDraft.trim() || isLoading} className="btn-primary !p-2.5 !bg-[var(--purple-accent)] hover:!bg-purple-700 text-white"><Send className="w-5 h-5" /></button>
         </div>
         {dragActive && (
           <div className="absolute inset-0 bg-black/10 border-2 border-dashed border-white/50 flex items-center justify-center font-medium text-white">

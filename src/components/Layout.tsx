@@ -76,6 +76,7 @@ export function Layout({ currentPage, onNavigate, children, gatewayRunning, inte
   const [profile, setProfile] = useState<AgentProfile>({ name: "Nova" });
   const [isMacOS, setIsMacOS] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [showAllChatSessions, setShowAllChatSessions] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -125,6 +126,11 @@ export function Layout({ currentPage, onNavigate, children, gatewayRunning, inte
       return next;
     });
   }
+
+  const visibleChatSessions = showAllChatSessions
+    ? (chatSessions || [])
+    : (chatSessions || []).slice(0, 5);
+  const hasMoreChatSessions = (chatSessions?.length || 0) > 5;
 
   async function windowAction(action: "close" | "minimize" | "expand") {
     try {
@@ -253,7 +259,7 @@ export function Layout({ currentPage, onNavigate, children, gatewayRunning, inte
                 {/* Chat History sub-items */}
                 {!sidebarCollapsed && isChat && chatSessions && chatSessions.length > 0 && (
                   <div className="mt-1 ml-2 pl-2 border-l border-[var(--border-subtle)] space-y-0.5">
-                    {chatSessions.slice(0, 5).map((session) => (
+                    {visibleChatSessions.map((session) => (
                       <button
                         key={session.key}
                         onClick={() => onSelectChatSession?.(session.key)}
@@ -267,6 +273,14 @@ export function Layout({ currentPage, onNavigate, children, gatewayRunning, inte
                         <span className="truncate flex-1">{sessionTitle(session)}</span>
                       </button>
                     ))}
+                    {hasMoreChatSessions && (
+                      <button
+                        onClick={() => setShowAllChatSessions((prev) => !prev)}
+                        className="w-full px-3 py-1 text-left rounded-md text-[11px] font-medium text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[rgba(0,0,0,0.03)] transition-colors"
+                      >
+                        {showAllChatSessions ? "Show less" : `Show ${chatSessions.length - 5} more`}
+                      </button>
+                    )}
                   </div>
                 )}
               </div>

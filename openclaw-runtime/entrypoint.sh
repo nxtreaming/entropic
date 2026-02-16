@@ -58,35 +58,17 @@ ln -sfn /data/qmd-models /home/node/.openclaw/.cache/qmd/models
 mkdir -p /home/node/.openclaw/workspace
 ln -sfn /home/node/.bun/install/global/node_modules /home/node/.openclaw/workspace/node_modules
 
-# qmd wrapper:
-# - Forces writable HOME/XDG paths in hardened container mode.
-# - Starts in "light mode" by translating `qmd query` -> `qmd search`
-#   until model downloads are present.
-cat > /data/qmd-wrapper << 'EOF'
-#!/bin/sh
-set -e
+# Ensure qmd's workspace-local tsx resolver stays available even in ESM context.
+if [ -d /home/node/.bun/install/global/node_modules/tsx ]; then
+  mkdir -p /home/node/.openclaw/workspace/node_modules
+  ln -sfn /home/node/.bun/install/global/node_modules/tsx /home/node/.openclaw/workspace/node_modules/tsx
+fi
 
-QMD_BIN="/home/node/.bun/bin/qmd"
+# qmd runtime environment for the bundled runtime image.
 export HOME=/home/node/.openclaw
 export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-/home/node/.openclaw/agents/main/qmd/xdg-config}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/home/node/.openclaw/agents/main/qmd/xdg-cache}"
 export NODE_PATH="/home/node/.bun/install/global/node_modules${NODE_PATH:+:$NODE_PATH}"
-
-if [ "${QMD_LIGHT_MODE:-1}" = "1" ] && [ "${1:-}" = "query" ]; then
-    MODELS_DIR="/data/qmd-models"
-    MODEL_COUNT=0
-    if [ -d "$MODELS_DIR" ]; then
-        MODEL_COUNT="$(find "$MODELS_DIR" -maxdepth 1 -type f -name '*.gguf' | wc -l | tr -d ' ')"
-    fi
-    if [ "$MODEL_COUNT" -lt 3 ]; then
-        shift
-        exec "$QMD_BIN" search "$@"
-    fi
-fi
-
-exec "$QMD_BIN" "$@"
-EOF
-chmod +x /data/qmd-wrapper
 
 # Write a minimal config to select the primary model when provided
 MEMORY_SLOT="${OPENCLAW_MEMORY_SLOT:-}"

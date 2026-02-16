@@ -16,7 +16,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tauri_plugin_shell::ShellExt;
+use tauri_plugin_opener::OpenerExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::time::timeout;
@@ -227,67 +227,159 @@ fn runtime_registry_image() -> String {
 }
 
 /// Ensure the openclaw-runtime image is available locally.
-/// 1. If already present → return Ok immediately.
-/// 2. Try loading a bundled tar (resources/openclaw-runtime.tar.gz or .tar).
+/// 1. Try loading a bundled tar (resources/openclaw-runtime.tar.gz or .tar).
+///    If a bundled image matches the local image signature, skip reload.
+/// 2. Fallback to local image check for existing image.
 /// 3. Try pulling from the configured registry.
 /// 4. Return a descriptive Err if nothing works.
+fn bundled_runtime_signature_from_manifest(tar_path: &Path) -> Result<String, String> {
+    let tar_path = tar_path.to_string_lossy();
+    let output = Command::new("tar")
+        .args(["-xOf", tar_path.as_ref(), "manifest.json"])
+        .output()
+        .map_err(|e| format!("failed to read manifest from {}: {}", tar_path, e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("failed to read manifest.json from {}: {}", tar_path, stderr.trim()));
+    }
+
+    let manifest: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("invalid manifest.json in {}: {}", tar_path, e))?;
+    let first_entry = manifest
+        .as_array()
+        .and_then(|items| items.first())
+        .ok_or_else(|| format!("manifest.json in {} has no entries", tar_path))?;
+    let config = first_entry
+        .get("Config")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| format!("manifest.json in {} missing Config field", tar_path))?;
+
+    let normalized = config
+        .strip_prefix("blobs/sha256/")
+        .or_else(|| config.strip_prefix("sha256:"))
+        .unwrap_or(config)
+        .trim()
+        .to_string();
+
+    if normalized.is_empty() {
+        return Err(format!("empty Config field in {}", tar_path));
+    }
+    Ok(normalized)
+}
+
+fn runtime_image_id() -> Result<Option<String>, String> {
+    let output = docker_command()
+        .args(["image", "inspect", RUNTIME_IMAGE, "--format", "{{.Id}}"])
+        .output()
+        .map_err(|e| format!("Failed to check image id: {}", e))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if id.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(id))
+}
+
+fn find_runtime_tar() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
+
+    let mut search_dirs = Vec::new();
+
+    // Release bundle: .../Contents/MacOS/Nova → .../Contents/Resources/
+    if let Some(contents_dir) = exe_dir.parent() {
+        let resources = contents_dir.join("Resources");
+        search_dirs.push(resources.clone());
+        search_dirs.push(resources.join("resources"));
+    }
+
+    // Dev mode: .../target/debug/nova → .../target/debug/resources/
+    search_dirs.push(exe_dir.join("resources"));
+    // Also check src-tauri/resources/ (when running from project root)
+    search_dirs.push(exe_dir.join("..").join("..").join("resources"));
+
+    for dir in search_dirs {
+        for name in &["openclaw-runtime.tar.gz", "openclaw-runtime.tar"] {
+            let tar_path = dir.join(name);
+            if tar_path.exists() {
+                return Some(tar_path);
+            }
+        }
+    }
+
+    None
+}
+
+fn load_runtime_from_tar(tar_path: &Path) -> Result<bool, String> {
+    println!("[Nova] Loading runtime image from {}", tar_path.display());
+    let load = docker_command()
+        .args(["load", "-i"])
+        .arg(tar_path)
+        .output()
+        .map_err(|e| format!("docker load failed: {}", e))?;
+    if load.status.success() {
+        println!("[Nova] Runtime image loaded from bundled tar");
+        return Ok(true);
+    }
+    let stderr = String::from_utf8_lossy(&load.stderr);
+    println!("[Nova] docker load failed: {}", stderr);
+    Ok(false)
+}
+
 fn ensure_runtime_image() -> Result<(), String> {
-    // 1. Already present?
+    let mut require_local_reload = false;
+
+    if let Some(tar_path) = find_runtime_tar() {
+        let tar_signature = bundled_runtime_signature_from_manifest(&tar_path).map_err(|e| {
+            println!("[Nova] Failed to read bundled runtime signature: {}", e);
+            e
+        });
+
+        if let Ok(tar_signature) = tar_signature {
+            let local_image_id = runtime_image_id()?;
+            if let Some(local_image_id) = local_image_id {
+                let local_signature = local_image_id
+                    .trim()
+                    .trim_start_matches("sha256:")
+                    .to_string();
+                if local_signature == tar_signature {
+                    return Ok(());
+                }
+                require_local_reload = true;
+                println!(
+                    "[Nova] Runtime image signature changed (local: {}, bundled: {}). Reloading bundled runtime image.",
+                    local_signature, tar_signature
+                );
+            }
+
+            if load_runtime_from_tar(&tar_path)? {
+                return Ok(());
+            }
+        }
+
+        println!("[Nova] Falling back to docker image lookup/pull flow for runtime image.");
+    }
+
+    // 2. Already present?
     let check = docker_command()
         .args(["image", "inspect", RUNTIME_IMAGE])
         .output()
         .map_err(|e| format!("Failed to check image: {}", e))?;
-    if check.status.success() {
+    if !require_local_reload && check.status.success() {
         return Ok(());
     }
 
     println!("[Nova] Runtime image not found locally, attempting to load/pull...");
 
-    // 2. Try bundled tar in the app resources (next to our binary)
-    let tar_loaded = (|| -> Result<bool, String> {
-        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        let exe_dir = exe.parent().ok_or("Cannot resolve exe dir")?;
-
-        let mut search_dirs = Vec::new();
-
-        // Release bundle: .../Contents/MacOS/Nova → .../Contents/Resources/
-        if let Some(contents_dir) = exe_dir.parent() {
-            let resources = contents_dir.join("Resources");
-            search_dirs.push(resources.clone());
-            search_dirs.push(resources.join("resources"));
+    if let Some(tar_path) = find_runtime_tar() {
+        match load_runtime_from_tar(&tar_path) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {} // no tar found or load failed, continue
+            Err(e) => println!("[Nova] Bundled tar check failed: {}", e),
         }
-
-        // Dev mode: .../target/debug/nova → .../target/debug/resources/
-        search_dirs.push(exe_dir.join("resources"));
-        // Also check src-tauri/resources/ (when running from project root)
-        search_dirs.push(exe_dir.join("..").join("..").join("resources"));
-
-        for dir in &search_dirs {
-            for name in &["openclaw-runtime.tar.gz", "openclaw-runtime.tar"] {
-                let tar_path = dir.join(name);
-                if tar_path.exists() {
-                    println!("[Nova] Loading runtime image from {}", tar_path.display());
-                    let load = docker_command()
-                        .args(["load", "-i"])
-                        .arg(&tar_path)
-                        .output()
-                        .map_err(|e| format!("docker load failed: {}", e))?;
-                    if load.status.success() {
-                        println!("[Nova] Runtime image loaded from bundled tar");
-                        return Ok(true);
-                    }
-                    let stderr = String::from_utf8_lossy(&load.stderr);
-                    println!("[Nova] docker load failed: {}", stderr);
-                }
-            }
-        }
-        Ok(false)
-    })();
-
-    match tar_loaded {
-        Ok(true) => return Ok(()),
-        Ok(false) => {} // no tar found, continue
-        Err(e) => println!("[Nova] Bundled tar check failed: {}", e),
     }
 
     // 3. Pull from registry
@@ -1519,26 +1611,32 @@ fn apply_default_qmd_memory_config(
     let cfg_obj = cfg.as_object_mut().expect("config root must be an object");
     let memory_enabled = slot != "none";
 
-    if memory_enabled {
+    let memory_backend = cfg_obj
+        .get("memory")
+        .and_then(|memory| memory.get("backend"))
+        .and_then(|backend| backend.as_str());
+
+    let using_qmd = memory_enabled && !matches!(memory_backend, Some("builtin"));
+
+    if using_qmd {
         let memory = ensure_object_entry(cfg_obj, "memory");
 
-        if !memory.contains_key("backend") {
-            memory.insert("backend".to_string(), serde_json::json!("qmd"));
-        }
+        memory.insert("backend".to_string(), serde_json::json!("qmd"));
+
         if !memory.contains_key("citations") {
             memory.insert("citations".to_string(), serde_json::json!("auto"));
         }
 
         let qmd = ensure_object_entry(memory, "qmd");
 
+        if qmd.get("command").and_then(|v| v.as_str()) == Some("/data/qmd-wrapper")
+            || !qmd.contains_key("command")
+        {
+            qmd.insert("command".to_string(), serde_json::json!("qmd"));
+        }
+
         if !qmd.contains_key("includeDefaultMemory") {
             qmd.insert("includeDefaultMemory".to_string(), serde_json::json!(true));
-        }
-        if !qmd.contains_key("command") {
-            qmd.insert(
-                "command".to_string(),
-                serde_json::json!("/data/qmd-wrapper"),
-            );
         }
 
         let sessions = ensure_object_entry(qmd, "sessions");
@@ -1568,6 +1666,12 @@ fn apply_default_qmd_memory_config(
         if !limits.contains_key("timeoutMs") {
             limits.insert("timeoutMs".to_string(), serde_json::json!(4000));
         }
+    } else if let Some(memory) = cfg_obj.get_mut("memory").and_then(|memory| memory.as_object_mut()) {
+        if let Some(qmd) = memory.get_mut("qmd").and_then(|qmd| qmd.as_object_mut()) {
+            if qmd.get("command").and_then(|value| value.as_str()) == Some("/data/qmd-wrapper") {
+                qmd.remove("command");
+            }
+        }
     }
 
     let agents = ensure_object_entry(cfg_obj, "agents");
@@ -1580,9 +1684,45 @@ fn apply_default_qmd_memory_config(
         *memory_search = serde_json::json!({"enabled": memory_enabled});
     }
 
-    if let Some(memory_search) = memory_search.as_object_mut() {
-        if !memory_search.contains_key("enabled") {
-            memory_search.insert("enabled".to_string(), serde_json::json!(memory_enabled));
+    if !memory_search.is_object() {
+        *memory_search = serde_json::json!({"enabled": memory_enabled});
+    }
+
+    let memory_search_obj = memory_search
+        .as_object_mut()
+        .expect("memorySearch must be an object");
+
+    if !memory_search_obj.contains_key("enabled") {
+        memory_search_obj.insert("enabled".to_string(), serde_json::json!(memory_enabled));
+    }
+
+    if !using_qmd {
+        if !memory_search_obj.contains_key("sources") {
+            if sessions_enabled {
+                memory_search_obj.insert(
+                    "sources".to_string(),
+                    serde_json::json!(["memory", "sessions"]),
+                );
+            } else {
+                memory_search_obj.insert("sources".to_string(), serde_json::json!(["memory"]));
+            }
+        } else if let Some(sources) = memory_search_obj
+            .get_mut("sources")
+            .and_then(|v| v.as_array_mut())
+        {
+            if !sources.iter().any(|v| v.as_str() == Some("memory")) {
+                sources.push(serde_json::json!("memory"));
+            }
+            if sessions_enabled && !sources.iter().any(|v| v.as_str() == Some("sessions")) {
+                sources.push(serde_json::json!("sessions"));
+            }
+        }
+
+        if sessions_enabled {
+            let experimental = ensure_object_entry(memory_search_obj, "experimental");
+            if !experimental.contains_key("sessionMemory") {
+                experimental.insert("sessionMemory".to_string(), serde_json::json!(true));
+            }
         }
     }
 }
@@ -6460,8 +6600,8 @@ pub async fn start_google_oauth(
         .append_pair("access_type", "offline")
         .append_pair("prompt", "consent");
 
-    app.shell()
-        .open(auth_url.as_str(), None)
+    app.opener()
+        .open_url(auth_url.as_str(), None::<&str>)
         .map_err(|e| format!("Failed to open browser: {}", e))?;
 
     let code = wait_for_oauth_callback(listener, &state).await?;

@@ -348,6 +348,14 @@ status() {
 
 up_stack() {
   start_stack
+
+  # Remove stale stopped gateway containers before launching a new one.
+  # This avoids the Docker "name already in use" retry path.
+  STOPPED_CONTAINER_IDS="$(run_docker ps -aq -f "name=nova-openclaw" -f "status=exited" || true)"
+  if [ -n "$STOPPED_CONTAINER_IDS" ]; then
+    run_docker rm -f nova-openclaw >/dev/null 2>&1 || true
+  fi
+
   echo "[dev] Starting Nova app with runtime prepared..."
   if [ -n "${ACTIVE_DOCKER_HOST}" ]; then
     echo "[dev] Launching with NOVA_COLIMA_HOME=$COLIMA_HOME and DOCKER_HOST=$ACTIVE_DOCKER_HOST"

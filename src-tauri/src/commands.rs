@@ -7320,7 +7320,7 @@ pub async fn scan_and_install_clawhub_skill(
     // OpenClaw can cache plugin/tool registry at process start. If the
     // gateway is running, recreate it so newly installed skills are loaded.
     if container_running() {
-        if let Err(e) = restart_gateway(app.clone(), state).await {
+        if let Err(e) = restart_gateway(app.clone(), state, None).await {
             eprintln!(
                 "[Nova] Failed to restart gateway after skill install: {}",
                 e

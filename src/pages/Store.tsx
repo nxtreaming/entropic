@@ -231,6 +231,19 @@ const MESSAGING_PLUGIN_IDS = new Set([
 ]);
 const HIDDEN_PLUGIN_IDS = new Set(["matrix", "mstreams"]);
 
+const FEATURED_SLUGS = new Set([
+  "github", "ontology", "summarize",
+  "arun-8687/tavily-search", "slack",
+]);
+
+const FEATURED_SKILLS_FALLBACK: ClawhubCatalogSkill[] = [
+  { slug: "github", display_name: "GitHub", summary: "Interact with GitHub repos, issues, PRs, and commits.", downloads: 0, installs_all_time: 0, stars: 0 },
+  { slug: "ontology", display_name: "Ontology", summary: "Knowledge graph and ontology management for structured reasoning.", downloads: 0, installs_all_time: 0, stars: 0 },
+  { slug: "summarize", display_name: "Summarize", summary: "Intelligent text summarization for long documents and content.", downloads: 0, installs_all_time: 0, stars: 0 },
+  { slug: "arun-8687/tavily-search", display_name: "Tavily Web Search", summary: "Web search powered by Tavily for real-time information retrieval.", downloads: 0, installs_all_time: 0, stars: 0 },
+  { slug: "slack", display_name: "Slack", summary: "Send and manage Slack messages and channels.", downloads: 0, installs_all_time: 0, stars: 0 },
+];
+
 const CATEGORIES = [
   { id: "all", label: "All" },
   { id: "tools", label: "Tools" },
@@ -581,6 +594,106 @@ export function Store({
     () => new Set(workspaceSkills.map((skill) => skill.id)),
     [workspaceSkills]
   );
+
+  const featuredSkills = useMemo(
+    () =>
+      Array.from(FEATURED_SLUGS).map(
+        (slug) =>
+          clawhubCatalog.find((s) => s.slug === slug) ??
+          FEATURED_SKILLS_FALLBACK.find((s) => s.slug === slug)!
+      ),
+    [clawhubCatalog]
+  );
+
+  const browseSkills = useMemo(
+    () => clawhubCatalog.filter((s) => !FEATURED_SLUGS.has(s.slug)),
+    [clawhubCatalog]
+  );
+
+  const isRateLimited = clawhubCatalog.some((s) => s.is_fallback);
+
+  function renderSkillCard(skill: ClawhubCatalogSkill) {
+    const installed = installedWorkspaceSkillIds.has(skill.slug);
+    const expanded = expandedClawhubSlug === skill.slug;
+    const details = clawhubDetails[skill.slug];
+    return (
+      <div key={skill.slug} className="aspect-[5/4] rounded-xl border border-[var(--border-subtle)] bg-[var(--system-gray-6)]/40 p-3 flex flex-col">
+        <div className="flex items-start gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="font-semibold text-[var(--text-primary)] line-clamp-1">{skill.display_name || skill.slug}</h3>
+              {installed ? (
+                <span className="text-[10px] font-bold uppercase tracking-wider text-green-700 bg-green-50 px-2 py-1 rounded-md">
+                  Installed
+                </span>
+              ) : (
+                <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)] bg-white px-2 py-1 rounded-md border border-[var(--border-subtle)]">
+                  ClawHub
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-[var(--text-tertiary)] mt-0.5 line-clamp-1">{skill.slug}</p>
+          </div>
+        </div>
+        <p className="mt-2 text-xs text-[var(--text-secondary)] line-clamp-2">{skill.summary || "No summary provided."}</p>
+        <div className="mt-2 flex flex-wrap gap-1 text-[10px] text-[var(--text-tertiary)]">
+          <span className="px-2 py-0.5 rounded-full bg-white border border-[var(--border-subtle)]">v{skill.latest_version || "latest"}</span>
+          <span className="px-2 py-0.5 rounded-full bg-white border border-[var(--border-subtle)]">★ {formatCompactNumber(skill.stars)}</span>
+          <span className="px-2 py-0.5 rounded-full bg-white border border-[var(--border-subtle)]">↓ {formatCompactNumber(skill.downloads)}</span>
+          <span className="px-2 py-0.5 rounded-full bg-white border border-[var(--border-subtle)]">↺ {formatCompactNumber(skill.installs_all_time)}</span>
+        </div>
+        <div className="mt-auto pt-3">
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => toggleClawhubDetails(skill.slug)}
+              className="py-2 rounded-lg text-xs font-semibold bg-white border border-[var(--border-subtle)] text-[var(--text-primary)]"
+            >
+              {expanded ? "Hide Details" : "Details"}
+            </button>
+            <button
+              onClick={() => scanInstallSkillFromClawhub(skill.slug, false)}
+              disabled={clawhubBusy || installed}
+              className={clsx(
+                "py-2 rounded-lg text-xs font-semibold",
+                installed
+                  ? "bg-[var(--system-gray-6)] text-[var(--text-tertiary)]"
+                  : "bg-[var(--system-blue)] text-white"
+              )}
+            >
+              {installed
+                ? "Installed"
+                : clawhubBusy && clawhubBusySlug === skill.slug
+                  ? "Scanning..."
+                  : "Install"}
+            </button>
+          </div>
+        </div>
+        {expanded && (
+          <div className="mt-3 rounded-lg bg-white border border-[var(--border-subtle)] p-3 text-xs">
+            {clawhubDetailLoading === skill.slug && (
+              <div className="flex items-center gap-2 text-[var(--text-secondary)]">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                Loading details...
+              </div>
+            )}
+            {clawhubDetailError && (
+              <p className="text-red-600">{clawhubDetailError}</p>
+            )}
+            {details && (
+              <div className="space-y-1 text-[var(--text-secondary)]">
+                <p><span className="font-semibold text-[var(--text-primary)]">Owner:</span> {details.owner_display_name || details.owner_handle || "Unknown"}</p>
+                <p><span className="font-semibold text-[var(--text-primary)]">Latest:</span> {details.latest_version || "latest"}</p>
+                <p><span className="font-semibold text-[var(--text-primary)]">Installs:</span> {details.installs_all_time}</p>
+                {details.changelog && (
+                  <p className="whitespace-pre-wrap line-clamp-4"><span className="font-semibold text-[var(--text-primary)]">Changelog:</span> {details.changelog}</p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   async function beginSecurityScan(params: {
     intent: ScanIntent;
@@ -1107,7 +1220,14 @@ export function Store({
           </div>
 
           <div className="mb-10">
-            <h2 className="text-xl font-bold text-[var(--text-primary)] mb-4">Browse ClawHub</h2>
+            <h2 className="text-xl font-bold text-[var(--text-primary)] mb-4">Featured Skills</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+              {featuredSkills.map((skill) => renderSkillCard(skill))}
+            </div>
+          </div>
+
+          <div className="mb-10">
+            <h2 className="text-xl font-bold text-[var(--text-primary)] mb-4">Browse more from ClawHub</h2>
             {clawhubLoading && (
               <div className="py-8 text-sm text-[var(--text-secondary)] flex items-center gap-2">
                 <Loader2 className="w-4 h-4 animate-spin" />
@@ -1121,100 +1241,19 @@ export function Store({
               </div>
             )}
 
-            {!clawhubLoading && !clawhubLookupError && clawhubCatalog.some((s) => s.is_fallback) && (
+            {!clawhubLoading && !clawhubLookupError && isRateLimited && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 mb-3">
-                Showing featured skills — full catalog temporarily unavailable due to rate limiting.
+                Full catalog temporarily unavailable due to rate limiting.
               </div>
             )}
 
-            {!clawhubLoading && !clawhubLookupError && (
+            {!clawhubLoading && !clawhubLookupError && browseSkills.length > 0 && (
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                {clawhubCatalog.map((skill) => {
-                  const installed = installedWorkspaceSkillIds.has(skill.slug);
-                  const expanded = expandedClawhubSlug === skill.slug;
-                  const details = clawhubDetails[skill.slug];
-                  return (
-                    <div key={skill.slug} className="aspect-[5/4] rounded-xl border border-[var(--border-subtle)] bg-[var(--system-gray-6)]/40 p-3 flex flex-col">
-                      <div className="flex items-start gap-2">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <h3 className="font-semibold text-[var(--text-primary)] line-clamp-1">{skill.display_name || skill.slug}</h3>
-                            {installed ? (
-                              <span className="text-[10px] font-bold uppercase tracking-wider text-green-700 bg-green-50 px-2 py-1 rounded-md">
-                                Installed
-                              </span>
-                            ) : (
-                              <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)] bg-white px-2 py-1 rounded-md border border-[var(--border-subtle)]">
-                                ClawHub
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-xs text-[var(--text-tertiary)] mt-0.5 line-clamp-1">{skill.slug}</p>
-                        </div>
-                      </div>
-                      <p className="mt-2 text-xs text-[var(--text-secondary)] line-clamp-2">{skill.summary || "No summary provided."}</p>
-                      <div className="mt-2 flex flex-wrap gap-1 text-[10px] text-[var(--text-tertiary)]">
-                        <span className="px-2 py-0.5 rounded-full bg-white border border-[var(--border-subtle)]">v{skill.latest_version || "latest"}</span>
-                        <span className="px-2 py-0.5 rounded-full bg-white border border-[var(--border-subtle)]">★ {formatCompactNumber(skill.stars)}</span>
-                        <span className="px-2 py-0.5 rounded-full bg-white border border-[var(--border-subtle)]">↓ {formatCompactNumber(skill.downloads)}</span>
-                        <span className="px-2 py-0.5 rounded-full bg-white border border-[var(--border-subtle)]">↺ {formatCompactNumber(skill.installs_all_time)}</span>
-                      </div>
-                      <div className="mt-auto pt-3">
-                        <div className="grid grid-cols-2 gap-2">
-                          <button
-                            onClick={() => toggleClawhubDetails(skill.slug)}
-                            className="py-2 rounded-lg text-xs font-semibold bg-white border border-[var(--border-subtle)] text-[var(--text-primary)]"
-                          >
-                            {expanded ? "Hide Details" : "Details"}
-                          </button>
-                          <button
-                            onClick={() => scanInstallSkillFromClawhub(skill.slug, false)}
-                            disabled={clawhubBusy || installed}
-                            className={clsx(
-                              "py-2 rounded-lg text-xs font-semibold",
-                              installed
-                                ? "bg-[var(--system-gray-6)] text-[var(--text-tertiary)]"
-                                : "bg-[var(--system-blue)] text-white"
-                            )}
-                          >
-                            {installed
-                              ? "Installed"
-                              : clawhubBusy && clawhubBusySlug === skill.slug
-                                ? "Scanning..."
-                                : "Install"}
-                          </button>
-                        </div>
-                      </div>
-                      {expanded && (
-                        <div className="mt-3 rounded-lg bg-white border border-[var(--border-subtle)] p-3 text-xs">
-                          {clawhubDetailLoading === skill.slug && (
-                            <div className="flex items-center gap-2 text-[var(--text-secondary)]">
-                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                              Loading details...
-                            </div>
-                          )}
-                          {clawhubDetailError && (
-                            <p className="text-red-600">{clawhubDetailError}</p>
-                          )}
-                          {details && (
-                            <div className="space-y-1 text-[var(--text-secondary)]">
-                              <p><span className="font-semibold text-[var(--text-primary)]">Owner:</span> {details.owner_display_name || details.owner_handle || "Unknown"}</p>
-                              <p><span className="font-semibold text-[var(--text-primary)]">Latest:</span> {details.latest_version || "latest"}</p>
-                              <p><span className="font-semibold text-[var(--text-primary)]">Installs:</span> {details.installs_all_time}</p>
-                              {details.changelog && (
-                                <p className="whitespace-pre-wrap line-clamp-4"><span className="font-semibold text-[var(--text-primary)]">Changelog:</span> {details.changelog}</p>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+                {browseSkills.map((skill) => renderSkillCard(skill))}
               </div>
             )}
 
-            {!clawhubLoading && !clawhubLookupError && clawhubCatalog.length === 0 && (
+            {!clawhubLoading && !clawhubLookupError && !isRateLimited && browseSkills.length === 0 && (
               <div className="text-center py-12 text-sm text-[var(--text-secondary)]">
                 No ClawHub skills found for this search.
               </div>

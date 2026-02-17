@@ -222,6 +222,11 @@ ensure_colima() {
     return 0
   fi
 
+  # Ensure Colima/Lima home directories exist.  The clean-for-user-test
+  # script (and first-time runs) wipe COLIMA_HOME entirely; Lima crashes
+  # with "signal: killed" if its home dir is missing.
+  mkdir -p "$COLIMA_HOME/_lima"
+
   for i in "${!colima_profiles[@]}"; do
     local profile="${colima_profiles[$i]}"
     local vm_type="${colima_vm_types[$i]}"
@@ -234,25 +239,41 @@ ensure_colima() {
     fi
 
     echo "[dev] Starting Colima profile $profile ($vm_type)..."
-    if start_output=$(run_colima --profile "$profile" start --vm-type "$vm_type" 2>&1); then
-      while [ "$socket_wait" -gt 0 ]; do
-        if active="$(resolve_docker_host "$profile")"; then
-          ACTIVE_DOCKER_HOST="$active"
-          echo "[dev] Colima started: $profile"
-          return 0
-        fi
-        sleep 1
-        socket_wait=$((socket_wait - 1))
-      done
-      echo "[dev] Colima started profile $profile but docker socket not ready yet."
-    else
-      echo "[dev] Colima failed to start profile $profile (vm: $vm_type)."
-      if [ -n "${start_output:-}" ]; then
-        echo "[dev] start output: ${start_output}"
+    local attempts=2
+    while [ "$attempts" -gt 0 ]; do
+      if start_output=$(run_colima --profile "$profile" start --vm-type "$vm_type" 2>&1); then
+        while [ "$socket_wait" -gt 0 ]; do
+          if active="$(resolve_docker_host "$profile")"; then
+            ACTIVE_DOCKER_HOST="$active"
+            echo "[dev] Colima started: $profile"
+            return 0
+          fi
+          sleep 1
+          socket_wait=$((socket_wait - 1))
+        done
+        echo "[dev] Colima started profile $profile but docker socket not ready yet."
+        break
       fi
-    fi
 
-    if [ "$vm_type" = "vz" ]; then
+      attempts=$((attempts - 1))
+      if [ "$attempts" -gt 0 ] && echo "${start_output:-}" | grep -qi "lima\|signal.*killed\|compatibility"; then
+        # Lima state is corrupt or stale — reset and retry the same profile
+        # instead of falling through to qemu.
+        echo "[dev] Lima init error detected for $profile; resetting state and retrying..."
+        run_colima --profile "$profile" delete -f 2>/dev/null || true
+        rm -rf "$COLIMA_HOME/_lima/$profile" 2>/dev/null || true
+        mkdir -p "$COLIMA_HOME/_lima"
+        sleep 1
+      else
+        echo "[dev] Colima failed to start profile $profile (vm: $vm_type)."
+        if [ -n "${start_output:-}" ]; then
+          echo "[dev] start output: ${start_output}"
+        fi
+        break
+      fi
+    done
+
+    if [ "$vm_type" = "vz" ] && [ -z "${ACTIVE_DOCKER_HOST:-}" ]; then
       echo "[dev] VZ profile unavailable; trying qemu fallback."
       continue
     fi

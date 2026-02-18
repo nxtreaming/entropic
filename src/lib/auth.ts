@@ -461,6 +461,18 @@ export async function apiRequest<T>(
   let response: Response;
   try {
     const requestUrl = `${API_URL}${endpoint}`;
+    const requestHeaders: Record<string, string> = {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    };
+    try {
+      requestHeaders["X-Nova-Device-Fingerprint"] = await getDeviceFingerprintHash();
+    } catch (error: any) {
+      authDebug("apiRequest fingerprint unavailable", {
+        endpoint,
+        message: error?.message || String(error),
+      });
+    }
     authDebug("apiRequest", {
       method: options.method || "GET",
       url: requestUrl,
@@ -470,8 +482,7 @@ export async function apiRequest<T>(
     response = await fetch(`${API_URL}${endpoint}`, {
       ...options,
       headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
+        ...requestHeaders,
         ...options.headers,
       },
     });
@@ -559,6 +570,13 @@ export async function createGatewayToken(opts?: {
 
   if (accessToken) {
     headers.Authorization = `Bearer ${accessToken}`;
+    try {
+      headers["X-Nova-Device-Fingerprint"] = await getDeviceFingerprintHash();
+    } catch (error: any) {
+      authDebug("createGatewayToken fingerprint unavailable", {
+        message: error?.message || String(error),
+      });
+    }
   } else if (allowAnonymous) {
     headers["X-Nova-Device-Fingerprint"] = await getDeviceFingerprintHash();
   } else {

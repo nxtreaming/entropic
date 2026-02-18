@@ -314,9 +314,7 @@ function isBillingIssueMessage(raw?: string | null): boolean {
     message.includes("trial credits") ||
     message.includes("add more credits") ||
     message.includes("payment required") ||
-    message.includes("billing issue") ||
-    message.includes("http 402") ||
-    /\b402\b/.test(message)
+    message.includes("billing issue")
   );
 }
 

@@ -31,7 +31,7 @@ import { resolveGatewayAuth } from "../lib/gateway-auth";
 import { Store as TauriStore } from "@tauri-apps/plugin-store";
 import { getLocalCreditBalance } from "../lib/localCredits";
 import { signInWithDiscord, signInWithEmail, signInWithGoogle, signUpWithEmail } from "../lib/auth";
-import novaLogo from "../assets/nova-logo.png";
+import entropicLogo from "../assets/entropic-logo.png";
 import type { Page } from "../components/Layout";
 
 // NOTE: Most type definitions are omitted for brevity in this example
@@ -86,7 +86,7 @@ function DiscordIcon({ className }: { className?: string }) {
 }
 
 // ── Local chat persistence ─────────────────────────────────────
-const CHAT_STORE_FILE = "nova-chat-history.json";
+const CHAT_STORE_FILE = "entropic-chat-history.json";
 const MAX_PERSISTED_SESSIONS = 50;
 const MAX_PERSISTED_MESSAGES = 200;
 
@@ -178,7 +178,7 @@ async function persistChatData(data: PersistedChatData): Promise<void> {
     await store.set("chatData", trimmed);
     await store.save();
   } catch (err) {
-    console.warn("[Nova] Failed to persist chat data:", err);
+    console.warn("[Entropic] Failed to persist chat data:", err);
   }
 }
 
@@ -188,7 +188,7 @@ async function loadPersistedChatData(): Promise<PersistedChatData | null> {
     const data = await store.get("chatData") as PersistedChatData | null;
     return data;
   } catch (err) {
-    console.warn("[Nova] Failed to load persisted chat data:", err);
+    console.warn("[Entropic] Failed to load persisted chat data:", err);
     return null;
   }
 }
@@ -302,7 +302,7 @@ function sanitizeAuthStoreDetails(raw: string): string {
     .replace(/\(agentDir:\s*[^)]+\)/g, "(agentDir: [hidden])");
 }
 
-const BILLING_RECOVERY_MESSAGE = "You're out of credits. Add credits to continue using Nova in proxy mode.";
+const BILLING_RECOVERY_MESSAGE = "You're out of credits. Add credits to continue using Entropic in proxy mode.";
 
 function isBillingIssueMessage(raw?: string | null): boolean {
   if (!raw) return false;
@@ -327,7 +327,7 @@ function formatAssistantErrorTextForUi(raw?: string | null): string {
     return "The AI provider connection failed. Check your network, auth, and billing setup, then retry.";
   }
   if (/failed to authenticate request with clerk/i.test(message)) {
-    return "Nova backend authentication failed. Sign out and sign back in, then retry.";
+    return "Entropic backend authentication failed. Sign out and sign back in, then retry.";
   }
   return message;
 }
@@ -673,7 +673,7 @@ function isGenericConversationTitle(value: string | null | undefined): boolean {
   const title = (value || "").trim();
   if (!title) return true;
   const lowered = title.toLocaleLowerCase();
-  if (lowered === "nova desktop") return true;
+  if (lowered === "entropic desktop") return true;
   if (lowered === "new chat" || lowered === "conversation" || lowered === "chat") return true;
   if (/^chat\s+[a-f0-9]{8,}$/i.test(title)) return true;
   return false;
@@ -830,8 +830,9 @@ function buildSuggestions(userName: string, hasName: boolean) {
   ];
 }
 
-function normalizeModelId(id: string | null | undefined): string | null {
+function normalizeModelId(id: string | null | undefined, proxyMode: boolean): string | null {
   if (!id) return null;
+  if (!proxyMode) return id;
   if (id.startsWith("openrouter/")) return id;
   return `openrouter/${id}`;
 }
@@ -993,7 +994,7 @@ export function Chat({
 
   function requestSignIn() {
     window.dispatchEvent(
-      new CustomEvent("nova-require-signin", {
+      new CustomEvent("entropic-require-signin", {
         detail: { source: "chat-credits" },
       })
     );
@@ -1007,11 +1008,11 @@ export function Chat({
       const balance = await getLocalCreditBalance();
       setLocalCreditsCents(balance.balance_cents);
     } catch (error) {
-      console.warn("[Nova] Failed to refresh trial credits:", error);
+      console.warn("[Entropic] Failed to refresh trial credits:", error);
     }
   }
 
-  async function handleNovaOAuthSignIn(provider: "google" | "discord") {
+  async function handleEntropicOAuthSignIn(provider: "google" | "discord") {
     setAuthLoading(provider);
     setAuthError(null);
     setAuthNotice(null);
@@ -1022,7 +1023,7 @@ export function Chat({
         await signInWithDiscord();
       }
       window.setTimeout(() => {
-        if (sessionStorage.getItem("nova_oauth_pending")) {
+        if (sessionStorage.getItem("entropic_oauth_pending")) {
           setAuthError("Sign in is taking longer than expected. If your browser did not open, try again.");
           setAuthLoading(null);
         }
@@ -1034,7 +1035,7 @@ export function Chat({
     }
   }
 
-  async function handleNovaEmailAuthSubmit(event: FormEvent) {
+  async function handleEntropicEmailAuthSubmit(event: FormEvent) {
     event.preventDefault();
     if (!authEmail.trim() || !authPassword.trim()) return;
     const mode = emailAuthMode;
@@ -1092,8 +1093,12 @@ export function Chat({
     if (text.includes("invalid gateway token")) return true;
     if (text.includes("gateway token validation failed")) return true;
     if (text.includes("ai provider error: 401")) return true;
+    if (text.includes("no cookie auth credentials found")) return true;
     const has401 = text.includes("401") || text.includes("unauthorized");
-    const looksProxy = text.includes("chat/completions") || text.includes("ai provider");
+    const looksProxy =
+      text.includes("chat/completions") ||
+      text.includes("ai provider") ||
+      text.includes("cookie auth credentials");
     return has401 && looksProxy;
   }
 
@@ -1402,7 +1407,7 @@ export function Chat({
         if (!cancelled) {
           setLocalCreditsCents(0);
         }
-        console.warn("[Nova] Failed to load trial credits:", error);
+        console.warn("[Entropic] Failed to load trial credits:", error);
       }
     };
 
@@ -1438,8 +1443,8 @@ export function Chat({
       });
 
     const onAuthChanged = () => refreshAuthState();
-    window.addEventListener("nova-auth-changed", onAuthChanged);
-    return () => window.removeEventListener("nova-auth-changed", onAuthChanged);
+    window.addEventListener("entropic-auth-changed", onAuthChanged);
+    return () => window.removeEventListener("entropic-auth-changed", onAuthChanged);
   }, []);
 
   // If authenticated via proxy, treat as connected even without local API keys
@@ -2308,9 +2313,9 @@ export function Chat({
     setError(null);
     try {
       const routingEnabled = import.meta.env.VITE_MODEL_ROUTING === "1";
-      const fastModelOverride = normalizeModelId(import.meta.env.VITE_FAST_MODEL);
-      const reasoningOverride = normalizeModelId(import.meta.env.VITE_REASONING_MODEL);
-      const defaultModel = normalizeModelId(selectedModel);
+      const fastModelOverride = normalizeModelId(import.meta.env.VITE_FAST_MODEL, proxyEnabled);
+      const reasoningOverride = normalizeModelId(import.meta.env.VITE_REASONING_MODEL, proxyEnabled);
+      const defaultModel = normalizeModelId(selectedModel, proxyEnabled);
       const fastModel = fastModelOverride ?? defaultModel;
       const reasoningModel = reasoningOverride ?? defaultModel;
       const decision = getRoutingDecision(messageContent);
@@ -2319,14 +2324,22 @@ export function Chat({
           ? reasoningModel
           : fastModel
         : null;
-      if (routingEnabled && chosenModel && currentSession && clientRef.current) {
-        const lastModel = sessionModelRef.current[currentSession];
-        if (lastModel !== chosenModel) {
-          sessionModelRef.current[currentSession] = chosenModel;
-          clientRef.current.patchSession(currentSession, { model: chosenModel }).then(
-            () => addDiag(`routing model=${chosenModel} reason=${decision.reason}`),
-            (err: unknown) => addDiag(`routing patch failed: ${String(err)}`),
-          );
+
+      const targetModel = routingEnabled ? chosenModel ?? defaultModel : defaultModel;
+      if (targetModel && sendSession && clientRef.current) {
+        const lastModel = sessionModelRef.current[sendSession];
+        if (lastModel !== targetModel) {
+          sessionModelRef.current[sendSession] = targetModel;
+          try {
+            await clientRef.current.patchSession(sendSession, { model: targetModel });
+            if (routingEnabled && chosenModel) {
+              addDiag(`routing model=${targetModel} reason=${decision.reason}`);
+            } else {
+              addDiag(`session model=${targetModel}`);
+            }
+          } catch (err: unknown) {
+            addDiag(`session model patch failed: ${String(err)}`);
+          }
         }
       }
       const sendStart = Date.now();
@@ -2526,13 +2539,13 @@ export function Chat({
             {accountSignInAvailable ? (
               <div className="text-center mb-8">
                 <div className="w-20 h-20 rounded-[2rem] bg-transparent mx-auto flex items-center justify-center mb-6">
-                  <img src={novaLogo} alt="Nova" className="w-20 h-20 rounded-[2rem] shadow-xl" />
+                  <img src={entropicLogo} alt="Entropic" className="w-20 h-20 rounded-[2rem] shadow-xl" />
                 </div>
-                <h2 className="text-3xl font-bold text-gray-900 mb-3 tracking-tight">Continue with Nova</h2>
+                <h2 className="text-3xl font-bold text-gray-900 mb-3 tracking-tight">Continue with Entropic</h2>
                 <p className="text-sm text-gray-500">
                   {trialCreditsExhausted
                     ? "Your free credits are used. Sign in to continue, or use your own provider."
-                    : "Sign in with your Nova account, or use your own provider."}
+                    : "Sign in with your Entropic account, or use your own provider."}
                 </p>
               </div>
             ) : (
@@ -2556,7 +2569,7 @@ export function Chat({
                   </div>
                 ) : null}
                 <button
-                  onClick={() => handleNovaOAuthSignIn("google")}
+                  onClick={() => handleEntropicOAuthSignIn("google")}
                   disabled={authLoading !== null || oauthLoading !== null}
                   className="w-full flex items-center justify-center gap-3 px-4 py-4 bg-white hover:bg-gray-50 text-gray-700 font-medium rounded-2xl border border-gray-200 transition-all hover:border-gray-300 active:scale-95 duration-200 disabled:opacity-50"
                 >
@@ -2564,7 +2577,7 @@ export function Chat({
                   {authLoading === "google" ? "Opening Google..." : "Continue with Google"}
                 </button>
                 <button
-                  onClick={() => handleNovaOAuthSignIn("discord")}
+                  onClick={() => handleEntropicOAuthSignIn("discord")}
                   disabled={authLoading !== null || oauthLoading !== null}
                   className="w-full flex items-center justify-center gap-3 px-4 py-4 bg-[#5865F2] hover:bg-[#4752C4] text-white font-medium rounded-2xl transition-all shadow-md hover:shadow-lg active:scale-95 duration-200 disabled:opacity-50"
                 >
@@ -2592,7 +2605,7 @@ export function Chat({
                   <span>Continue with Email</span>
                 </button>
                 {showEmailAuth ? (
-                  <form onSubmit={handleNovaEmailAuthSubmit} className="space-y-3 rounded-2xl bg-gray-50 p-4 text-left">
+                  <form onSubmit={handleEntropicEmailAuthSubmit} className="space-y-3 rounded-2xl bg-gray-50 p-4 text-left">
                     <input
                       type="email"
                       value={authEmail}
@@ -2762,7 +2775,7 @@ export function Chat({
 
   const renderWelcome = () => {
     const userName = onboardingData?.userName || "there";
-    const agentName = onboardingData?.agentName || "Nova";
+    const agentName = onboardingData?.agentName || "Joulie";
     const hasName = userName !== "there";
     const displayName = hasName ? userName : "My";
     const suggestions = buildSuggestions(displayName, hasName);

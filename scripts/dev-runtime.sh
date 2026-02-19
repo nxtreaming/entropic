@@ -396,6 +396,32 @@ start_stack() {
   status
 }
 
+bundle_runtime_tar_if_available() {
+  local tar_path="$PROJECT_ROOT/src-tauri/resources/openclaw-runtime.tar.gz"
+
+  if [ -f "$tar_path" ]; then
+    return 0
+  fi
+
+  if ! run_docker image inspect openclaw-runtime:latest >/dev/null 2>&1; then
+    echo "[dev] openclaw-runtime:latest not found in active Docker daemon; skipping runtime tar bundle."
+    return 0
+  fi
+
+  echo "[dev] Bundling OpenClaw runtime tar for Tauri resources..."
+  if [ -n "${ACTIVE_DOCKER_HOST:-}" ]; then
+    if ! DOCKER_HOST="$ACTIVE_DOCKER_HOST" "$PROJECT_ROOT/scripts/bundle-runtime-image.sh"; then
+      echo "[dev] WARNING: Failed to bundle runtime tar; continuing."
+      return 0
+    fi
+  else
+    if ! "$PROJECT_ROOT/scripts/bundle-runtime-image.sh"; then
+      echo "[dev] WARNING: Failed to bundle runtime tar; continuing."
+      return 0
+    fi
+  fi
+}
+
 stop_stack() {
   echo "[dev] Stopping Entropic gateway containers..."
   run_docker stop \
@@ -471,6 +497,7 @@ status() {
 
 up_stack() {
   start_stack
+  bundle_runtime_tar_if_available
 
   # Remove stale stopped gateway containers before launching a new one.
   # This avoids the Docker "name already in use" retry path.

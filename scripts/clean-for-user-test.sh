@@ -12,12 +12,18 @@ TMP_BASE="${TMP_BASE%/}"
 if [[ -z "$TMP_BASE" ]]; then
     TMP_BASE="/tmp"
 fi
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 FALLBACK_COLIMA_HOME_SHARED="/Users/Shared/entropic/colima-${USER_UID}"
 FALLBACK_COLIMA_HOME_TMP="${TMP_BASE}/entropic-colima-${USER_UID}"
 FALLBACK_RUNTIME_HOME_SHARED="/Users/Shared/entropic/home-${USER_UID}"
 FALLBACK_RUNTIME_HOME_TMP="${TMP_BASE}/entropic-home-${USER_UID}"
 LEGACY_FALLBACK_COLIMA_HOME_TMP="/tmp/entropic-colima-${USER_UID}"
 LEGACY_FALLBACK_RUNTIME_HOME_TMP="/tmp/entropic-home-${USER_UID}"
+ENTROPIC_APP_DATA_DIR_MAC="$HOME/Library/Application Support/ai.openclaw.entropic"
+LEGACY_NOVA_APP_DATA_DIR_MAC="$HOME/Library/Application Support/ai.openclaw.nova"
+ENTROPIC_APP_DATA_DIR_LINUX="$HOME/.local/share/ai.openclaw.entropic"
+LEGACY_NOVA_APP_DATA_DIR_LINUX="$HOME/.local/share/ai.openclaw.nova"
 echo ""
 
 is_safe_entropic_runtime_home_for_cleanup() {
@@ -104,11 +110,34 @@ if [[ "$LEGACY_FALLBACK_RUNTIME_HOME_TMP" != "$FALLBACK_RUNTIME_HOME_TMP" ]]; th
     echo "  → Removing legacy fallback $LEGACY_FALLBACK_RUNTIME_HOME_TMP..."
     rm -rf "$LEGACY_FALLBACK_RUNTIME_HOME_TMP"
 fi
+echo "  → Removing runtime state roots ~/.entropic and ~/.nova..."
+rm -rf "$HOME/.entropic" "$HOME/.nova"
 
 echo "✅ Entropic runtime cleaned"
 
 # ============================================
-# 3. CLEAN GLOBAL COLIMA (optional)
+# 3. CLEAN PERSISTED APP DATA (SETTINGS/AUTH/OAUTH)
+# ============================================
+
+echo ""
+echo "🗃️  Cleaning persisted app data..."
+
+for app_data_dir in \
+    "$ENTROPIC_APP_DATA_DIR_MAC" \
+    "$LEGACY_NOVA_APP_DATA_DIR_MAC" \
+    "$ENTROPIC_APP_DATA_DIR_LINUX" \
+    "$LEGACY_NOVA_APP_DATA_DIR_LINUX"
+do
+    if [ -e "$app_data_dir" ]; then
+        echo "  → Removing $app_data_dir..."
+        rm -rf "$app_data_dir"
+    fi
+done
+
+echo "✅ Persisted app data cleaned"
+
+# ============================================
+# 4. CLEAN GLOBAL COLIMA (optional)
 # ============================================
 
 echo ""
@@ -129,7 +158,7 @@ rm -rf ~/.lima
 echo "✅ Global Colima state cleaned"
 
 # ============================================
-# 4. DOCKER CLEANUP
+# 5. DOCKER CLEANUP
 # ============================================
 
 echo ""
@@ -177,13 +206,13 @@ else
 fi
 
 # ============================================
-# 5. PROJECT BUILD ARTIFACTS
+# 6. PROJECT BUILD ARTIFACTS
 # ============================================
 
 echo ""
 echo "📦 Cleaning project build artifacts..."
 
-cd "$(dirname "$0")"
+cd "$PROJECT_ROOT"
 
 # JavaScript artifacts
 echo "  → Removing node_modules..."
@@ -207,7 +236,7 @@ echo "  → Running cargo clean..."
 cargo clean --manifest-path src-tauri/Cargo.toml 2>/dev/null || true
 
 # ============================================
-# 6. REMOVE OLD BUNDLED RESOURCES
+# 7. REMOVE OLD BUNDLED RESOURCES
 # ============================================
 
 echo ""
@@ -218,7 +247,7 @@ rm -f src-tauri/resources/openclaw-runtime.tar.gz
 rm -f src-tauri/resources/entropic-skill-scanner.tar.gz
 
 # ============================================
-# 7. CLEAN APP LOGS
+# 8. CLEAN APP LOGS
 # ============================================
 
 echo ""
@@ -239,6 +268,8 @@ echo "  • ${FALLBACK_COLIMA_HOME_SHARED}: $([ -d "$FALLBACK_COLIMA_HOME_SHARED
 echo "  • ${FALLBACK_COLIMA_HOME_TMP}: $([ -d "$FALLBACK_COLIMA_HOME_TMP" ] && echo "EXISTS" || echo "REMOVED ✓")"
 echo "  • ${FALLBACK_RUNTIME_HOME_SHARED}: $([ -d "$FALLBACK_RUNTIME_HOME_SHARED" ] && echo "EXISTS" || echo "REMOVED ✓")"
 echo "  • ${FALLBACK_RUNTIME_HOME_TMP}: $([ -d "$FALLBACK_RUNTIME_HOME_TMP" ] && echo "EXISTS" || echo "REMOVED ✓")"
+echo "  • ${ENTROPIC_APP_DATA_DIR_MAC}: $([ -d "$ENTROPIC_APP_DATA_DIR_MAC" ] && echo "EXISTS" || echo "REMOVED ✓")"
+echo "  • ${LEGACY_NOVA_APP_DATA_DIR_MAC}: $([ -d "$LEGACY_NOVA_APP_DATA_DIR_MAC" ] && echo "EXISTS" || echo "REMOVED ✓")"
 echo "  • ~/.colima: $([ -d ~/.colima ] && echo "EXISTS" || echo "REMOVED ✓")"
 echo "  • src-tauri/target: $([ -d src-tauri/target ] && echo "EXISTS" || echo "REMOVED ✓")"
 echo "  • node_modules: $([ -d node_modules ] && echo "EXISTS" || echo "REMOVED ✓")"
@@ -250,4 +281,4 @@ echo "   docker context use desktop-linux"
 echo "   # Open Docker Desktop if not running"
 echo ""
 echo "2. Run the build:"
-echo "   ./build-for-user-test.sh"
+echo "   ./scripts/build-for-user-test.sh"

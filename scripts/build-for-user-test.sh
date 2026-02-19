@@ -41,6 +41,12 @@ try_docker_context() {
     DOCKER_CONTEXT="$context" docker info >"$DOCKER_CHECK_OUT" 2>"$DOCKER_CHECK_ERR"
 }
 
+docker_context_host() {
+    local context="$1"
+    [ -n "$context" ] || return 1
+    docker context inspect "$context" --format '{{(index .Endpoints "docker").Host}}' 2>/dev/null | head -n 1
+}
+
 # ============================================
 # 0. PRE-FLIGHT CHECK: DOCKER RUNNING?
 # ============================================
@@ -122,6 +128,21 @@ else
 fi
 
 cleanup_docker_check
+
+# Pin a single Docker host for the rest of this script so every sub-script
+# (runtime build, scanner build, bundling) talks to the same daemon.
+ACTIVE_DOCKER_CONTEXT="${DOCKER_CONTEXT:-$(docker context show 2>/dev/null || true)}"
+ACTIVE_DOCKER_HOST=""
+if [ -n "$ACTIVE_DOCKER_CONTEXT" ]; then
+    ACTIVE_DOCKER_HOST="$(docker_context_host "$ACTIVE_DOCKER_CONTEXT" || true)"
+fi
+if [ -n "$ACTIVE_DOCKER_HOST" ]; then
+    unset DOCKER_CONTEXT
+    export DOCKER_HOST="$ACTIVE_DOCKER_HOST"
+    echo "🐳 Pinned Docker host: $DOCKER_HOST (context: $ACTIVE_DOCKER_CONTEXT)"
+else
+    echo "⚠️  Could not resolve Docker host from context; using Docker CLI defaults."
+fi
 
 # ============================================
 # 1. INSTALL DEPENDENCIES
@@ -239,12 +260,17 @@ echo ""
 }
 
 # ============================================
-# 6. EXPORT SKILL SCANNER IMAGE
+# 6. EXPORT RUNTIME + SKILL SCANNER IMAGES
 # ============================================
 
-# build-cross-platform.sh wiped src-tauri/resources/ before building and
-# restored it (with colima/docker/openclaw). Now export the scanner tar so
-# we can copy it into the app bundle.
+# build-cross-platform.sh wipes src-tauri/resources/ before building.
+# Re-export both runtime tars here to guarantee they're present for app copy.
+echo ""
+echo "📦 Exporting OpenClaw runtime image..."
+OUTPUT="$PROJECT_ROOT/src-tauri/resources/openclaw-runtime.tar.gz" \
+    "$PROJECT_ROOT/scripts/bundle-runtime-image.sh"
+echo "✅ Runtime image exported"
+
 echo ""
 echo "📦 Exporting Skill Scanner image..."
 IMAGE=entropic-skill-scanner:latest \

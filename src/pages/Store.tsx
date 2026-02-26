@@ -1379,7 +1379,7 @@ export function Store({
                   ? "Finish authorization in your browser. We'll update Entropic as soon as it's complete."
                   : "Syncing your credentials with Entropic..."}
               </p>
-              {setupTimedOut && (
+              {setupTimedOut && !setupError && (
                 <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 mb-3 w-full">
                   This is taking longer than expected. If your browser didn&apos;t open, use the buttons below to open or copy the link manually.
                 </p>
@@ -1393,9 +1393,7 @@ export function Store({
                 <div className="w-full mb-3 flex flex-col gap-2">
                   <button
                     className="w-full py-2.5 bg-blue-600 text-white rounded-2xl text-[13px] font-bold hover:bg-blue-700 transition-colors flex items-center justify-center gap-2"
-                    onClick={() => {
-                      void reopenSetupLaunchUrl();
-                    }}
+                    onClick={() => { void reopenSetupLaunchUrl(); }}
                     disabled={setupVerifying}
                   >
                     <ExternalLink className="w-3.5 h-3.5" />
@@ -1414,6 +1412,16 @@ export function Store({
                     {setupUrlCopied ? "Copied!" : "Copy link to open manually"}
                   </button>
                 </div>
+              )}
+              {setupProvider === "x" && !setupLaunchUrl && (setupTimedOut || setupError) && (
+                <button
+                  className="w-full py-2.5 mb-3 bg-blue-600 text-white rounded-2xl text-[13px] font-bold hover:bg-blue-700 transition-colors flex items-center justify-center gap-2"
+                  onClick={() => { void handleConnectIntegration("x"); }}
+                  disabled={!!connecting || setupVerifying}
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  {connecting === "x" ? "Opening..." : "Try Again"}
+                </button>
               )}
               <button
                 className="w-full py-2.5 mb-3 bg-white border border-gray-200 text-gray-900 rounded-2xl text-[13px] font-bold hover:bg-gray-50 transition-colors"

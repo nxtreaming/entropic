@@ -450,6 +450,15 @@ function isPolicyMessageRemovedError(raw?: string | null): boolean {
   );
 }
 
+function isContainerRestartingError(raw?: string | null): boolean {
+  if (!raw) return false;
+  const text = raw.toLowerCase();
+  return (
+    (text.includes("container") && (text.includes("restarting") || text.includes("restart"))) ||
+    (text.includes("is restarting") && text.includes("wait"))
+  );
+}
+
 function formatAssistantErrorTextForUi(raw?: string | null): string {
   const message = sanitizeGatewayErrorMessage(raw || "");
   if (isBillingIssueMessage(message)) {
@@ -457,6 +466,9 @@ function formatAssistantErrorTextForUi(raw?: string | null): string {
   }
   if (isPolicyMessageRemovedError(raw)) {
     return "The conversation context was cleared by the provider. Starting fresh — please resend your message.";
+  }
+  if (isContainerRestartingError(raw)) {
+    return "The AI model is reloading. Please wait a moment and try again.";
   }
   if (/^connection error\.?$/i.test(message)) {
     return "The AI provider connection failed. Check your network, auth, and billing setup, then retry.";
@@ -2295,6 +2307,11 @@ export function Chat({
     }
   }, [gatewayStarting]);
 
+  // Clear stale errors when the model changes (errors are expected during model transitions)
+  useEffect(() => {
+    setError(null);
+  }, [selectedModel]);
+
   useEffect(() => {
     if (isConnecting) {
       setError(null);
@@ -2379,6 +2396,12 @@ export function Chat({
         const suppressError = gatewayStarting || isConnecting || !gatewayRunning || inStartupGracePeriod;
         if (!client.isConnected()) {
           setConnected(false);
+        }
+
+        // Suppress container restarting errors — these are transient during model switches
+        if (isContainerRestartingError(err)) {
+          addDiag(`gateway error (container restart, suppressed): ${err}`);
+          return;
         }
 
         // Intercept proxy auth failures at the gateway level — show modal instead of raw banner
@@ -2756,7 +2779,15 @@ export function Chat({
       if (eventRunId) {
         delete runSessionKeyRef.current[eventRunId];
       }
-      addDiag(`chat error: ${rawErrorMessage}`);
+      // Auto-clear transient container restart errors after a brief delay
+      if (isContainerRestartingError(rawErrorMessage)) {
+        addDiag(`container restart error (will auto-clear): ${rawErrorMessage}`);
+        setTimeout(() => {
+          setError((prev) => (prev === errorMessage ? null : prev));
+        }, 6000);
+      } else {
+        addDiag(`chat error: ${rawErrorMessage}`);
+      }
       if (isPolicyMessageRemovedError(rawErrorMessage)) {
         // The provider stripped all messages (e.g. internal-only history). Reset
         // the session context on the gateway so the next send starts clean.

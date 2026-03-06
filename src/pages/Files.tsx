@@ -337,8 +337,13 @@ export function Files({
   const [selected, setSelected] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entry?: WorkspaceFileEntry } | null>(null);
+  const [createFolderOpen, setCreateFolderOpen] = useState(false);
+  const [createFolderName, setCreateFolderName] = useState("");
+  const [createFolderBasePath, setCreateFolderBasePath] = useState("");
+  const [creatingFolder, setCreatingFolder] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const createFolderInputRef = useRef<HTMLInputElement>(null);
 
   // Chat
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -622,14 +627,39 @@ export function Files({
     catch (e) { setError(`Delete failed: ${e instanceof Error ? e.message : String(e)}`); }
   }
 
-  async function handleCreateFolder(basePath?: string) {
-    const name = prompt("New folder name:"); if (!name?.trim()) return;
+  function handleCreateFolder(basePath?: string) {
     const root = typeof basePath === "string" ? basePath : currentPath;
+    setCreateFolderBasePath(root);
+    setCreateFolderName("");
+    setCreateFolderOpen(true);
+    setContextMenu(null);
+  }
+
+  useEffect(() => {
+    if (!createFolderOpen) return;
+    const id = window.setTimeout(() => createFolderInputRef.current?.focus(), 0);
+    return () => window.clearTimeout(id);
+  }, [createFolderOpen]);
+
+  async function submitCreateFolder() {
+    const trimmedName = createFolderName.trim();
+    if (!trimmedName || creatingFolder) return;
+    const root = createFolderBasePath;
+    setCreatingFolder(true);
+    setError(null);
     try {
-      await invoke<WorkspaceFileEntry>("create_workspace_directory", { parentPath: root, name: name.trim() });
+      try {
+        await invoke<WorkspaceFileEntry>("create_workspace_directory", { parentPath: root, name: trimmedName });
+      } catch {
+        const fallbackPath = root ? `${root}/${trimmedName}` : trimmedName;
+        await invoke<WorkspaceFileEntry[]>("list_workspace_files", { path: fallbackPath });
+      }
+      setCreateFolderOpen(false);
+      setCreateFolderName("");
       if (finderOpen) await fetchFiles(currentPath);
     }
     catch (e) { setError(`Failed to create folder: ${e instanceof Error ? e.message : String(e)}`); }
+    finally { setCreatingFolder(false); }
   }
 
   // ── Drag & Drop files ───────────────────────────────────────────────
@@ -1074,6 +1104,72 @@ export function Files({
             <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[70] flex items-center gap-2 px-4 py-2 rounded-lg text-xs animate-fade-in" style={{ background: "rgba(220,38,38,0.9)", color: "white", backdropFilter: "blur(8px)", boxShadow: "0 4px 20px rgba(0,0,0,0.3)" }} onClick={(e) => e.stopPropagation()}>
               <span className="flex-1">{error}</span>
               <button onClick={() => setError(null)} className="font-medium underline">Dismiss</button>
+            </div>
+          )}
+
+          {createFolderOpen && (
+            <div
+              className="absolute inset-0 z-[72] flex items-center justify-center"
+              style={{ background: "rgba(0,0,0,0.34)", backdropFilter: "blur(6px)" }}
+              onClick={() => { if (!creatingFolder) setCreateFolderOpen(false); }}
+            >
+              <div
+                className="w-full max-w-sm rounded-2xl p-4"
+                style={{
+                  background: "rgba(28,28,30,0.92)",
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  boxShadow: "0 24px 60px rgba(0,0,0,0.45)",
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="mb-3">
+                  <p className="text-sm font-semibold" style={{ color: "#fff" }}>New Folder</p>
+                  <p className="text-xs mt-1" style={{ color: "#9a9a9a" }}>
+                    {createFolderBasePath ? `Create inside ${createFolderBasePath}` : "Create in Workspace"}
+                  </p>
+                </div>
+                <input
+                  ref={createFolderInputRef}
+                  type="text"
+                  value={createFolderName}
+                  disabled={creatingFolder}
+                  onChange={(e) => setCreateFolderName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      submitCreateFolder();
+                    }
+                    if (e.key === "Escape" && !creatingFolder) {
+                      setCreateFolderOpen(false);
+                    }
+                  }}
+                  className="w-full px-3 py-2 rounded-xl text-sm outline-none"
+                  style={{
+                    background: "rgba(255,255,255,0.08)",
+                    color: "#fff",
+                    border: "1px solid rgba(255,255,255,0.12)",
+                  }}
+                  placeholder="Folder name"
+                />
+                <div className="mt-4 flex items-center justify-end gap-2">
+                  <button
+                    onClick={() => setCreateFolderOpen(false)}
+                    disabled={creatingFolder}
+                    className="px-3 py-1.5 rounded-lg text-xs"
+                    style={{ background: "rgba(255,255,255,0.08)", color: "#d0d0d0" }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={submitCreateFolder}
+                    disabled={!createFolderName.trim() || creatingFolder}
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50"
+                    style={{ background: "#54a3f7", color: "#fff" }}
+                  >
+                    {creatingFolder ? "Creating..." : "Create"}
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 

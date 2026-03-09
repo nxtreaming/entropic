@@ -458,7 +458,7 @@ export function SetupScreen({ onComplete, preview }: Props) {
 
                   <div className="text-center">
                     <p className="text-xs text-[var(--text-secondary)] mb-3">
-                      Automatic cleanup resets Entropic&apos;s isolated Colima runtime (VM/image/cache and container state under Entropic&apos;s runtime). It does not touch your macOS home files or Docker Desktop data.
+                      Automatic cleanup resets Entropic&apos;s isolated runtime state. On Windows it removes Entropic&apos;s managed WSL distros and runtime cache; on macOS it resets Entropic&apos;s isolated Colima runtime. It does not touch your normal WSL distros, macOS home files, or Docker Desktop data.
                     </p>
                     <button
                       onClick={() => startSetup(false)}

@@ -57,6 +57,16 @@ function cloneWarmState(state: SettingsWarmState): SettingsWarmState {
   };
 }
 
+function isWarmStateComplete(state: SettingsWarmState): boolean {
+  return (
+    state.profile !== undefined &&
+    state.agentProfileState !== undefined &&
+    state.runtimeVersionInfo !== undefined &&
+    state.oauthStatus !== undefined &&
+    state.authState !== undefined
+  );
+}
+
 async function maybeEnableConversationMemoryIndexing(
   state: AgentProfileState | undefined,
 ): Promise<AgentProfileState | undefined> {
@@ -79,7 +89,7 @@ export function getCachedSettingsWarmState(): SettingsWarmState | null {
 export async function loadSettingsWarmState(opts?: {
   force?: boolean;
 }): Promise<SettingsWarmState> {
-  if (!opts?.force && cachedWarmState) {
+  if (!opts?.force && cachedWarmState && isWarmStateComplete(cachedWarmState)) {
     return cloneWarmState(cachedWarmState);
   }
   if (!opts?.force && warmStatePromise) {
@@ -88,32 +98,61 @@ export async function loadSettingsWarmState(opts?: {
 
   warmStatePromise = (async () => {
     const baseState = cachedWarmState ? cloneWarmState(cachedWarmState) : {};
-    const [profileResult, agentProfileResult, runtimeVersionResult, oauthStatusResult, authStateResult] =
-      await Promise.allSettled([
-        loadProfile(),
-        invoke<AgentProfileState>("get_agent_profile_state"),
-        invoke<RuntimeVersionInfo>("get_runtime_version_info"),
-        invoke<Record<string, string>>("get_oauth_status"),
-        invoke<AuthStateSnapshot>("get_auth_state"),
-      ]);
+    const shouldLoadAll = Boolean(opts?.force);
+    const tasks: Array<Promise<void>> = [];
 
-    if (profileResult.status === "fulfilled") {
-      baseState.profile = profileResult.value;
-    }
-    if (agentProfileResult.status === "fulfilled") {
-      baseState.agentProfileState = await maybeEnableConversationMemoryIndexing(
-        agentProfileResult.value,
+    if (shouldLoadAll || baseState.profile === undefined) {
+      tasks.push(
+        loadProfile()
+          .then((profile) => {
+            baseState.profile = profile;
+          })
+          .catch(() => undefined),
       );
     }
-    if (runtimeVersionResult.status === "fulfilled") {
-      baseState.runtimeVersionInfo = runtimeVersionResult.value;
+
+    if (shouldLoadAll || baseState.agentProfileState === undefined) {
+      tasks.push(
+        invoke<AgentProfileState>("get_agent_profile_state")
+          .then((state) => maybeEnableConversationMemoryIndexing(state))
+          .then((state) => {
+            baseState.agentProfileState = state;
+          })
+          .catch(() => undefined),
+      );
     }
-    if (oauthStatusResult.status === "fulfilled") {
-      baseState.oauthStatus = oauthStatusResult.value;
+
+    if (shouldLoadAll || baseState.runtimeVersionInfo === undefined) {
+      tasks.push(
+        invoke<RuntimeVersionInfo>("get_runtime_version_info")
+          .then((runtimeVersionInfo) => {
+            baseState.runtimeVersionInfo = runtimeVersionInfo;
+          })
+          .catch(() => undefined),
+      );
     }
-    if (authStateResult.status === "fulfilled") {
-      baseState.authState = authStateResult.value;
+
+    if (shouldLoadAll || baseState.oauthStatus === undefined) {
+      tasks.push(
+        invoke<Record<string, string>>("get_oauth_status")
+          .then((oauthStatus) => {
+            baseState.oauthStatus = oauthStatus;
+          })
+          .catch(() => undefined),
+      );
     }
+
+    if (shouldLoadAll || baseState.authState === undefined) {
+      tasks.push(
+        invoke<AuthStateSnapshot>("get_auth_state")
+          .then((authState) => {
+            baseState.authState = authState;
+          })
+          .catch(() => undefined),
+      );
+    }
+
+    await Promise.all(tasks);
 
     cachedWarmState = cloneWarmState(baseState);
     return cloneWarmState(baseState);

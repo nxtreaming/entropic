@@ -29,6 +29,7 @@ type SettingsListener = (snapshot: DesktopSettingsSnapshot) => void;
 let storePromise: Promise<Store> | null = null;
 let snapshotPromise: Promise<DesktopSettingsSnapshot> | null = null;
 let cachedSnapshot: DesktopSettingsSnapshot | null = null;
+let writeQueue: Promise<void> = Promise.resolve();
 const listeners = new Set<SettingsListener>();
 
 function cloneSnapshot(snapshot: DesktopSettingsSnapshot): DesktopSettingsSnapshot {
@@ -115,21 +116,30 @@ export async function updateDesktopSettings(
   patch: Partial<DesktopSettingsSnapshot>,
 ): Promise<DesktopSettingsSnapshot> {
   const normalizedPatch = normalizeDesktopSettings(patch);
-  const previous = await loadDesktopSettings();
-  const next = normalizeDesktopSettings({ ...previous, ...normalizedPatch });
-  const store = await getStore();
+  const runUpdate = async () => {
+    const previous = await loadDesktopSettings();
+    const next = normalizeDesktopSettings({ ...previous, ...normalizedPatch });
+    const store = await getStore();
 
-  for (const key of SETTING_KEYS) {
-    const value = next[key];
-    if (value === undefined) {
-      await store.delete(String(key));
-      continue;
+    for (const key of SETTING_KEYS) {
+      const value = next[key];
+      if (value === undefined) {
+        await store.delete(String(key));
+        continue;
+      }
+      await store.set(String(key), value);
     }
-    await store.set(String(key), value);
-  }
-  await store.save();
-  publish(next);
-  return cloneSnapshot(next);
+    await store.save();
+    publish(next);
+    return cloneSnapshot(next);
+  };
+
+  const result = writeQueue.then(runUpdate, runUpdate);
+  writeQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
 }
 
 export function subscribeDesktopSettings(listener: SettingsListener): () => void {

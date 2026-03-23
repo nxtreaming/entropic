@@ -44,6 +44,11 @@ append_plugin_load_path() {
     PLUGIN_LOAD_PATHS="${PLUGIN_LOAD_PATHS}\"${escaped_path}\""
 }
 
+is_bundled_plugin() {
+    plugin_id="$1"
+    [ -f "/app/dist/extensions/${plugin_id}/index.js" ] || [ -f "/app/dist/extensions/${plugin_id}/index.mjs" ]
+}
+
 append_auth_profile() {
     key="$1"
     provider="$2"
@@ -331,7 +336,9 @@ fi
 if [ -d "/app/extensions/entropic-quai-builder" ] || [ -d "/data/entropic-skills/entropic-quai-builder" ] || [ -d "${ENTROPIC_SKILLS_PATH}/entropic-quai-builder" ] || [ -d "${ENTROPIC_SKILLS_PATH}/entropic-quai-builder/current" ]; then
     PLUGIN_ENTRIES="${PLUGIN_ENTRIES}, \"entropic-quai-builder\": { \"enabled\": true }"
 fi
-append_plugin_load_path "$(resolve_plugin_load_path "lossless-claw")"
+if ! is_bundled_plugin "lossless-claw"; then
+    append_plugin_load_path "$(resolve_plugin_load_path "lossless-claw")"
+fi
 append_plugin_load_path "$(resolve_plugin_load_path "entropic-x")"
 append_plugin_load_path "$(resolve_plugin_load_path "entropic-quai-builder")"
 if [ -n "$MEMORY_CONFIG" ]; then

@@ -492,6 +492,11 @@ fn has_configured_provider_key(api_keys: &HashMap<String, String>, provider: &st
         .unwrap_or(false)
 }
 
+fn bundled_plugin_entry_exists(plugin_id: &str) -> bool {
+    container_path_exists(&format!("/app/dist/extensions/{}/index.js", plugin_id))
+        || container_path_exists(&format!("/app/dist/extensions/{}/index.mjs", plugin_id))
+}
+
 fn normalize_proxy_gateway_model(model: &str) -> String {
     let trimmed = model.trim();
     if trimmed.is_empty() {
@@ -7302,9 +7307,20 @@ Use it for durable decisions, preferences, and facts that should persist across 
         }
     };
 
-    if container_plugin_exists("lossless-claw") {
+    if container_plugin_exists("lossless-claw") && !bundled_plugin_entry_exists("lossless-claw") {
         if let Some(path) = resolve_managed_plugin_path("lossless-claw") {
             ensure_plugin_load_path(&mut cfg, path);
+        }
+    }
+
+    // Bundled gateway plugins should not also be force-loaded from /app/extensions,
+    // otherwise OpenClaw warns that the config plugin overrides the bundled one.
+    if container_plugin_exists("lossless-claw") && bundled_plugin_entry_exists("lossless-claw") {
+        if let Some(list) = cfg
+            .pointer_mut("/plugins/load/paths")
+            .and_then(|value| value.as_array_mut())
+        {
+            list.retain(|entry| entry.as_str() != Some("/app/extensions/lossless-claw"));
         }
     }
 

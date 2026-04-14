@@ -157,19 +157,25 @@ function SettingsRow({
   onClick?: () => void
 }) {
   return (
-    <div className={clsx("p-4 flex items-center justify-between gap-4 transition-colors", onClick && "cursor-pointer hover:bg-[var(--system-gray-6)]")} onClick={onClick}>
-      <div className="flex items-center gap-3 overflow-hidden">
+    <div
+      className={clsx(
+        "p-4 flex flex-col items-stretch gap-4 transition-colors sm:flex-row sm:items-center sm:justify-between",
+        onClick && "cursor-pointer hover:bg-[var(--system-gray-6)]",
+      )}
+      onClick={onClick}
+    >
+      <div className="flex min-w-0 items-center gap-3 overflow-hidden">
         {Icon && (
           <div className="w-7 h-7 rounded-md bg-[var(--system-blue)]/10 text-[var(--system-blue)] flex items-center justify-center flex-shrink-0">
             <Icon className="w-4 h-4" />
           </div>
         )}
         <div className="min-w-0">
-          <div className="text-[14px] font-medium text-[var(--text-primary)]">{label}</div>
+          <div className="text-[14px] font-medium text-[var(--text-primary)] break-words">{label}</div>
           {description && <div className="text-[12px] text-[var(--text-secondary)] truncate">{description}</div>}
         </div>
       </div>
-      <div className="flex-shrink-0 flex items-center gap-2">
+      <div className="flex min-w-0 items-center gap-2 sm:flex-shrink-0 sm:justify-end">
         {children}
       </div>
     </div>

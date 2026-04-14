@@ -287,18 +287,18 @@ export function ModelSelector({
                  bg-[var(--bg-card)] hover:bg-[var(--system-gray-6)]
                  rounded-xl border border-[var(--border-subtle)] shadow-sm transition-all"
       >
-        <div className="flex items-center gap-3">
-          <TierIcon className={`w-5 h-5 ${TIER_COLORS[currentModel?.tier || "recommended"]}`} />
-          <div className="text-left">
-            <div className="text-[14px] font-semibold text-[var(--text-primary)]">
+        <div className="flex min-w-0 items-center gap-3">
+          <TierIcon className={`w-5 h-5 shrink-0 ${TIER_COLORS[currentModel?.tier || "recommended"]}`} />
+          <div className="min-w-0 text-left">
+            <div className="truncate text-[14px] font-semibold text-[var(--text-primary)]">
               {currentModel?.name || "Select model"}
             </div>
-            <div className="text-[12px] text-[var(--text-secondary)]">
+            <div className="truncate text-[12px] text-[var(--text-secondary)]">
               {currentModel?.provider} · {currentModel?.tier}
             </div>
           </div>
         </div>
-        <ChevronDown className={`w-5 h-5 text-[var(--text-tertiary)] transition-transform ${isOpen ? "rotate-180" : ""}`} />
+        <ChevronDown className={`w-5 h-5 shrink-0 text-[var(--text-tertiary)] transition-transform ${isOpen ? "rotate-180" : ""}`} />
       </button>
 
       {isOpen && (

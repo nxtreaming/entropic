@@ -78,6 +78,14 @@ type SkillCard = {
 
 type ScanIntent = "plugin-enable" | "skill-audit";
 
+type PendingScanRequest = {
+  intent: ScanIntent;
+  targetName: string;
+  pluginId?: string;
+  skillId?: string;
+  scan: () => Promise<PluginScanResult>;
+};
+
 type ClawhubInstallResult = {
   scan: PluginScanResult;
   installed: boolean;
@@ -355,6 +363,7 @@ export function Store({
   const [scanResult, setScanResult] = useState<PluginScanResult | null>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
+  const pendingScanRequestRef = useRef<PendingScanRequest | null>(null);
   const [scanIntent, setScanIntent] = useState<ScanIntent>("plugin-enable");
   const [scanTargetName, setScanTargetName] = useState("");
   const [clawhubBusy, setClawhubBusy] = useState(false);
@@ -682,13 +691,8 @@ export function Store({
     }
   }
 
-  async function beginSecurityScan(params: {
-    intent: ScanIntent;
-    targetName: string;
-    pluginId?: string;
-    skillId?: string;
-    scan: () => Promise<PluginScanResult>;
-  }) {
+  async function beginSecurityScan(params: PendingScanRequest) {
+    pendingScanRequestRef.current = params;
     setScanIntent(params.intent);
     setScanTargetName(params.targetName);
     setScanPluginId(params.pluginId || null);
@@ -707,6 +711,12 @@ export function Store({
     } finally {
       setIsScanning(false);
     }
+  }
+
+  async function retrySecurityScan() {
+    const request = pendingScanRequestRef.current;
+    if (!request || isScanning) return;
+    await beginSecurityScan(request);
   }
 
   async function handleEnablePlugin(id: string) {
@@ -1403,6 +1413,7 @@ export function Store({
         scanResult={scanResult}
         isScanning={isScanning}
         error={scanError}
+        onRetry={retrySecurityScan}
         onClose={() => {
           setScanModalOpen(false);
           setScanPluginId(null);

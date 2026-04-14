@@ -5675,9 +5675,10 @@ fn clawhub_exec(args: &[&str]) -> Result<Output, String> {
         "CLAWHUB_BIN=/data/.local/bin/clawhub; \
          CLAWHUB_DIST=/data/.local/lib/node_modules/clawhub/dist/cli.js; \
          CLAWHUB_BUILDINFO=/data/.local/lib/node_modules/clawhub/dist/cli/buildInfo.js; \
-         if [ ! -x \"$CLAWHUB_BIN\" ] || [ ! -f \"$CLAWHUB_DIST\" ] || [ ! -f \"$CLAWHUB_BUILDINFO\" ]; then \
-           rm -rf /data/.local/lib/node_modules/clawhub /data/.local/bin/clawhub /data/.local/bin/clawdhub; \
-           npm install -g --prefix /data/.local clawhub@0.7.0; \
+         CLAWHUB_JSON5=/data/.local/lib/node_modules/json5/package.json; \
+         if [ ! -x \"$CLAWHUB_BIN\" ] || [ ! -f \"$CLAWHUB_DIST\" ] || [ ! -f \"$CLAWHUB_BUILDINFO\" ] || [ ! -f \"$CLAWHUB_JSON5\" ]; then \
+           rm -rf /data/.local/lib/node_modules/clawhub /data/.local/lib/node_modules/json5 /data/.local/bin/clawhub /data/.local/bin/clawdhub; \
+           npm install -g --prefix /data/.local clawhub@0.7.0 json5@2.2.3; \
          fi; \
          exec node \"$CLAWHUB_DIST\"",
     );
@@ -5707,12 +5708,50 @@ fn clawhub_exec(args: &[&str]) -> Result<Output, String> {
         .map_err(|e| format!("Failed to run ClawHub command: {}", e))
 }
 
+fn clawhub_output_suggests_broken_install(output: &Output) -> bool {
+    if output.status.success() {
+        return false;
+    }
+    let combined = command_output_error(output).to_ascii_lowercase();
+    combined.contains("err_module_not_found")
+        || combined.contains("module_not_found")
+        || combined.contains("cannot find package")
+}
+
+fn repair_clawhub_install() {
+    let repair_cmd =
+        "rm -rf /data/.local/lib/node_modules/clawhub /data/.local/lib/node_modules/json5 /data/.local/bin/clawhub /data/.local/bin/clawdhub && \
+         npm install -g --prefix /data/.local clawhub@0.7.0 json5@2.2.3";
+    let _ = docker_exec_output(&[
+        "exec",
+        OPENCLAW_CONTAINER,
+        "env",
+        "HOME=/data",
+        "TMPDIR=/data/tmp",
+        "XDG_CONFIG_HOME=/data/.config",
+        "XDG_CACHE_HOME=/data/.cache",
+        "npm_config_cache=/data/.npm",
+        "PLAYWRIGHT_BROWSERS_PATH=/data/playwright",
+        "sh",
+        "-c",
+        repair_cmd,
+    ]);
+}
+
 /// Run a ClawHub command with automatic retry on rate-limit errors.
-/// Retries up to `max_retries` times with exponential backoff (2s, 4s, 8s, …).
+/// Retries up to `max_retries` times with exponential backoff (2s, 4s, 8s, …),
+/// and performs one self-heal pass if the npm install looks partially broken.
 fn clawhub_exec_with_retry(args: &[&str], max_retries: u32) -> Result<Output, String> {
     let mut attempts = 0u32;
+    let mut repaired_broken_install = false;
     loop {
         let output = clawhub_exec(args)?;
+        if clawhub_output_suggests_broken_install(&output) && !repaired_broken_install {
+            repaired_broken_install = true;
+            eprintln!("[Entropic] ClawHub install looks broken (missing module); repairing and retrying once…");
+            repair_clawhub_install();
+            continue;
+        }
         let combined = format!(
             "{} {}",
             String::from_utf8_lossy(&output.stderr),

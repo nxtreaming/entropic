@@ -79,7 +79,7 @@ const ENTROPIC_NATIVE_API_ALLOWED_HOSTS: &[&str] = &["localhost", "127.0.0.1"];
 const ENTROPIC_NATIVE_API_ALLOWED_DOMAINS: &[&str] = &["entropic.qu.ai"];
 const CLIENT_LOG_MAX_BYTES: u64 = 2 * 1024 * 1024;
 const CLIENT_LOG_READ_MAX_BYTES: usize = 512 * 1024;
-const DEFAULT_PROXY_GATEWAY_MODEL: &str = "venice/kimi-k2-6";
+const DEFAULT_PROXY_GATEWAY_MODEL: &str = "moonshotai/kimi-k2.6";
 const DEFAULT_LOCAL_ANTHROPIC_GATEWAY_MODEL: &str = "anthropic/claude-opus-4-6:thinking";
 const DEFAULT_LOCAL_OPENAI_GATEWAY_MODEL: &str = "openai-codex/gpt-5.3-codex";
 const DEFAULT_LOCAL_GOOGLE_GATEWAY_MODEL: &str = "google/gemini-2.5-pro";
@@ -542,6 +542,30 @@ fn bundled_plugin_entry_exists(plugin_id: &str) -> bool {
         || container_path_exists(&format!("/app/dist/extensions/{}/index.mjs", plugin_id))
 }
 
+fn container_gateway_plugin_entry_exists(path: &str) -> bool {
+    container_path_exists(&format!("{}/index.js", path))
+        || container_path_exists(&format!("{}/index.mjs", path))
+}
+
+fn container_loadable_gateway_plugin_exists(plugin_id: &str) -> bool {
+    if container_gateway_plugin_entry_exists(&format!("/app/extensions/{}", plugin_id)) {
+        return true;
+    }
+    if bundled_plugin_entry_exists(plugin_id) {
+        return true;
+    }
+    if let Some(skills_root) = read_container_env("ENTROPIC_SKILLS_PATH") {
+        let base = format!("{}/{}", skills_root.trim_end_matches('/'), plugin_id);
+        let current = format!("{}/current", base);
+        if container_gateway_plugin_entry_exists(&current)
+            || container_gateway_plugin_entry_exists(&base)
+        {
+            return true;
+        }
+    }
+    container_gateway_plugin_entry_exists(&format!("/data/entropic-skills/{}", plugin_id))
+}
+
 fn remove_bundled_plugin_load_paths(cfg: &mut serde_json::Value, plugin_id: &str) {
     let bundled_roots = [
         format!("/app/extensions/{}", plugin_id),
@@ -557,6 +581,33 @@ fn remove_bundled_plugin_load_paths(cfg: &mut serde_json::Value, plugin_id: &str
             };
             let trimmed = path.trim();
             !bundled_roots
+                .iter()
+                .any(|root| trimmed == root || trimmed.starts_with(&format!("{}/", root)))
+        });
+    }
+}
+
+fn remove_managed_plugin_load_paths(cfg: &mut serde_json::Value, plugin_id: &str) {
+    let mut roots = vec![
+        format!("/app/extensions/{}", plugin_id),
+        format!("/app/dist/extensions/{}", plugin_id),
+        format!("/data/entropic-skills/{}", plugin_id),
+    ];
+    if let Some(skills_root) = read_container_env("ENTROPIC_SKILLS_PATH") {
+        let base = format!("{}/{}", skills_root.trim_end_matches('/'), plugin_id);
+        roots.push(base.clone());
+        roots.push(format!("{}/current", base));
+    }
+    if let Some(list) = cfg
+        .pointer_mut("/plugins/load/paths")
+        .and_then(|value| value.as_array_mut())
+    {
+        list.retain(|entry| {
+            let Some(path) = entry.as_str() else {
+                return true;
+            };
+            let trimmed = path.trim();
+            !roots
                 .iter()
                 .any(|root| trimmed == root || trimmed.starts_with(&format!("{}/", root)))
         });
@@ -9147,6 +9198,20 @@ fn append_unique_openclaw_config_array_strings(
     set_openclaw_config_value(cfg, path, serde_json::json!(next));
 }
 
+fn remove_openclaw_config_array_string(cfg: &mut serde_json::Value, path: &[&str], value: &str) {
+    let pointer = format!("/{}", path.join("/"));
+    let Some(items) = cfg.pointer(&pointer).and_then(|v| v.as_array()) else {
+        return;
+    };
+
+    let next = items
+        .iter()
+        .filter_map(|item| item.as_str())
+        .filter(|item| *item != value)
+        .collect::<Vec<&str>>();
+    set_openclaw_config_value(cfg, path, serde_json::json!(next));
+}
+
 fn normalize_telegram_allow_from_for_dm_policy(cfg: &mut serde_json::Value, dm_policy: &str) {
     let existing_allow_from: Vec<String> = cfg
         .get("channels")
@@ -11061,7 +11126,13 @@ Use it for durable decisions, preferences, and facts that should persist across 
     }
 
     // Enable x plugin if it exists (entropic-x or legacy nova-x).
-    let x_plugin_id = resolve_managed_plugin_id("entropic-x", "nova-x");
+    let x_plugin_id = if container_loadable_gateway_plugin_exists("entropic-x") {
+        Some("entropic-x")
+    } else if container_loadable_gateway_plugin_exists("nova-x") {
+        Some("nova-x")
+    } else {
+        None
+    };
     remove_openclaw_config_value(&mut cfg, &["plugins", "entries", "entropic-x"]);
     remove_openclaw_config_value(&mut cfg, &["plugins", "entries", "nova-x"]);
     let mut has_x_plugin = false;
@@ -11082,7 +11153,7 @@ Use it for durable decisions, preferences, and facts that should persist across 
 
     // Enable managed Quai builder skill pack when available.
     remove_openclaw_config_value(&mut cfg, &["plugins", "entries", "entropic-quai-builder"]);
-    if container_plugin_exists("entropic-quai-builder") {
+    if container_loadable_gateway_plugin_exists("entropic-quai-builder") {
         set_openclaw_config_value(
             &mut cfg,
             &["plugins", "entries", "entropic-quai-builder", "enabled"],
@@ -11768,12 +11839,29 @@ fn normalize_openclaw_config(cfg: &mut serde_json::Value) {
         &["tools", "deny"],
         &["file_write", "file_fetch", "dir_list", "dir_fetch"],
     );
-    append_unique_openclaw_config_array_strings(cfg, &["plugins", "deny"], &["file-transfer"]);
-    set_openclaw_config_value(
-        cfg,
-        &["plugins", "entries", "file-transfer", "enabled"],
-        serde_json::json!(false),
-    );
+    // Newer OpenClaw validates plugin references even when they are disabled or
+    // denied. Scrub legacy entries for plugins no longer bundled in the runtime
+    // so persisted dev volumes can self-heal instead of failing on boot.
+    if cfg
+        .pointer("/tools/web/search/provider")
+        .and_then(|value| value.as_str())
+        == Some("perplexity")
+    {
+        remove_openclaw_config_value(cfg, &["tools", "web", "search"]);
+    } else {
+        remove_openclaw_config_value(cfg, &["tools", "web", "search", "perplexity"]);
+    }
+    remove_openclaw_config_value(cfg, &["plugins", "entries", "perplexity"]);
+    remove_openclaw_config_value(cfg, &["plugins", "entries", "file-transfer"]);
+    remove_openclaw_config_array_string(cfg, &["plugins", "deny"], "file-transfer");
+    if !container_loadable_gateway_plugin_exists("entropic-x") {
+        remove_openclaw_config_value(cfg, &["plugins", "entries", "entropic-x"]);
+        remove_managed_plugin_load_paths(cfg, "entropic-x");
+    }
+    if !container_loadable_gateway_plugin_exists("entropic-quai-builder") {
+        remove_openclaw_config_value(cfg, &["plugins", "entries", "entropic-quai-builder"]);
+        remove_managed_plugin_load_paths(cfg, "entropic-quai-builder");
+    }
 
     // Docker bridge requests can present a non-loopback source IP.
     // Allow token-authenticated Control UI access in local desktop mode.

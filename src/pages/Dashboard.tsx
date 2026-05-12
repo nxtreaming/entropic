@@ -436,7 +436,7 @@ type Props = {
 };
 
 // Default models per mode
-const DEFAULT_PROXY_MODEL = "venice/kimi-k2-6";
+const DEFAULT_PROXY_MODEL = "moonshotai/kimi-k2.6";
 const DEFAULT_PROXY_ANTHROPIC_MODEL = "anthropic/claude-opus-4-6";
 const DEFAULT_PROXY_GOOGLE_MODEL = "google/gemini-3.1-pro-preview";
 const DEFAULT_LOCAL_MODEL = "anthropic/claude-opus-4-6:thinking";
@@ -2444,15 +2444,20 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
   function renderChatPage() {
     const gatewayBootstrapPending =
       !prefsLoaded ||
-      (!isAuthenticated && isAuthConfigured && !useLocalKeys && localCreditBalanceCents === null);
+      (!gatewayRunning &&
+        !isAuthenticated &&
+        isAuthConfigured &&
+        !useLocalKeys &&
+        localCreditBalanceCents === null);
     const gatewayRecovering =
       bootstrapState.gatewayContainerRunning &&
       !gatewayRunning &&
       bootstrapState.gatewayLaunchMode !== "stopped";
+    const gatewayStartupBlocking = showGatewayStartup && gatewayStartupStage !== "connect";
     const gatewayStarting =
       gatewayBootstrapPending ||
       gatewayRecovering ||
-      showGatewayStartup ||
+      gatewayStartupBlocking ||
       (isTogglingGateway && !gatewayRunning) ||
       gatewayRetryIn !== null;
     const gatewayLifecycleText = gatewayLifecycleLabel({

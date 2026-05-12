@@ -1375,11 +1375,15 @@ export function Chat({
   const { isAuthenticated, isAuthConfigured, refreshBalance } = useAuth();
   const [localCreditsCents, setLocalCreditsCents] = useState<number | null>(null);
   const localTrialLoading =
-    !isAuthenticated && isAuthConfigured && !useLocalKeys && localCreditsCents === null;
+    !gatewayRunning &&
+    !isAuthenticated &&
+    isAuthConfigured &&
+    !useLocalKeys &&
+    localCreditsCents === null;
   const proxyEnabled =
     isAuthConfigured &&
     !useLocalKeys &&
-    (isAuthenticated || (localCreditsCents ?? 0) > 0);
+    (isAuthenticated || gatewayRunning || (localCreditsCents ?? 0) > 0);
   const [messages, setMessages] = useState<Message[]>([]);
   const [draftsBySession, setDraftsBySession] = useState<Record<string, string>>({});
   const [shellDraftsBySession, setShellDraftsBySession] = useState<Record<string, string>>({});

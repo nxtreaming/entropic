@@ -49,6 +49,20 @@ is_bundled_plugin() {
     [ -f "/app/dist/extensions/${plugin_id}/index.js" ] || [ -f "/app/dist/extensions/${plugin_id}/index.mjs" ]
 }
 
+is_loadable_gateway_plugin_path() {
+    path="$1"
+    [ -f "${path}/index.js" ] || [ -f "${path}/index.mjs" ]
+}
+
+is_loadable_gateway_plugin() {
+    plugin_id="$1"
+    is_loadable_gateway_plugin_path "/app/extensions/${plugin_id}" \
+        || is_bundled_plugin "${plugin_id}" \
+        || is_loadable_gateway_plugin_path "${ENTROPIC_SKILLS_PATH}/${plugin_id}/current" \
+        || is_loadable_gateway_plugin_path "${ENTROPIC_SKILLS_PATH}/${plugin_id}" \
+        || is_loadable_gateway_plugin_path "/data/entropic-skills/${plugin_id}"
+}
+
 append_auth_profile() {
     key="$1"
     provider="$2"
@@ -334,18 +348,22 @@ fi
 if [ -d "/app/extensions/lossless-claw" ]; then
     PLUGIN_ENTRIES="${PLUGIN_ENTRIES}, \"lossless-claw\": { \"enabled\": true }"
 fi
-if [ -d "/app/extensions/entropic-x" ] || [ -d "/data/entropic-skills/entropic-x" ] || [ -d "${ENTROPIC_SKILLS_PATH}/entropic-x" ] || [ -d "${ENTROPIC_SKILLS_PATH}/entropic-x/current" ]; then
+if is_loadable_gateway_plugin "entropic-x"; then
     PLUGIN_ENTRIES="${PLUGIN_ENTRIES}, \"entropic-x\": { \"enabled\": true }"
     ALSO_ALLOW="${ALSO_ALLOW}, \"x_search\", \"x_profile\", \"x_thread\", \"x_user_tweets\""
 fi
-if [ -d "/app/extensions/entropic-quai-builder" ] || [ -d "/data/entropic-skills/entropic-quai-builder" ] || [ -d "${ENTROPIC_SKILLS_PATH}/entropic-quai-builder" ] || [ -d "${ENTROPIC_SKILLS_PATH}/entropic-quai-builder/current" ]; then
+if is_loadable_gateway_plugin "entropic-quai-builder"; then
     PLUGIN_ENTRIES="${PLUGIN_ENTRIES}, \"entropic-quai-builder\": { \"enabled\": true }"
 fi
 if ! is_bundled_plugin "lossless-claw"; then
     append_plugin_load_path "$(resolve_plugin_load_path "lossless-claw")"
 fi
-append_plugin_load_path "$(resolve_plugin_load_path "entropic-x")"
-append_plugin_load_path "$(resolve_plugin_load_path "entropic-quai-builder")"
+if is_loadable_gateway_plugin "entropic-x"; then
+    append_plugin_load_path "$(resolve_plugin_load_path "entropic-x")"
+fi
+if is_loadable_gateway_plugin "entropic-quai-builder"; then
+    append_plugin_load_path "$(resolve_plugin_load_path "entropic-quai-builder")"
+fi
 if [ -n "$MEMORY_CONFIG" ]; then
     PLUGIN_ENTRIES="${PLUGIN_ENTRIES}, ${MEMORY_CONFIG}"
 fi
@@ -475,6 +493,67 @@ const pruneLegacyControlUiFallback = (value) => {
   controlUi.dangerouslyDisableDeviceAuth = false;
 };
 
+const pruneLegacyValidationFailures = (value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+  const hasLoadableGatewayPlugin = (pluginId) => [
+    `/app/extensions/${pluginId}/index.js`,
+    `/app/extensions/${pluginId}/index.mjs`,
+    `/app/dist/extensions/${pluginId}/index.js`,
+    `/app/dist/extensions/${pluginId}/index.mjs`,
+    `/data/entropic-skills/${pluginId}/index.js`,
+    `/data/entropic-skills/${pluginId}/index.mjs`,
+    `${process.env.ENTROPIC_SKILLS_PATH || ''}/${pluginId}/index.js`,
+    `${process.env.ENTROPIC_SKILLS_PATH || ''}/${pluginId}/index.mjs`,
+    `${process.env.ENTROPIC_SKILLS_PATH || ''}/${pluginId}/current/index.js`,
+    `${process.env.ENTROPIC_SKILLS_PATH || ''}/${pluginId}/current/index.mjs`,
+  ].some((path) => fs.existsSync(path));
+  const removePluginLoadPaths = (plugins, pluginId) => {
+    const load = plugins.load;
+    if (!load || typeof load !== 'object' || Array.isArray(load) || !Array.isArray(load.paths)) return;
+    const roots = [
+      `/app/extensions/${pluginId}`,
+      `/app/dist/extensions/${pluginId}`,
+      `/data/entropic-skills/${pluginId}`,
+      `${process.env.ENTROPIC_SKILLS_PATH || ''}/${pluginId}`,
+      `${process.env.ENTROPIC_SKILLS_PATH || ''}/${pluginId}/current`,
+    ].filter(Boolean);
+    load.paths = load.paths.filter((raw) => {
+      if (typeof raw !== 'string') return true;
+      const path = raw.trim();
+      return !roots.some((root) => path === root || path.startsWith(`${root}/`));
+    });
+  };
+
+  const search = value.tools?.web?.search;
+  if (search && typeof search === 'object' && !Array.isArray(search)) {
+    if (search.provider === 'perplexity') {
+      delete value.tools.web.search;
+    } else {
+      delete search.perplexity;
+    }
+  }
+
+  const plugins = value.plugins;
+  if (!plugins || typeof plugins !== 'object' || Array.isArray(plugins)) return;
+
+  if (plugins.entries && typeof plugins.entries === 'object' && !Array.isArray(plugins.entries)) {
+    delete plugins.entries.perplexity;
+    delete plugins.entries['file-transfer'];
+    if (!hasLoadableGatewayPlugin('entropic-x')) {
+      delete plugins.entries['entropic-x'];
+      removePluginLoadPaths(plugins, 'entropic-x');
+    }
+    if (!hasLoadableGatewayPlugin('entropic-quai-builder')) {
+      delete plugins.entries['entropic-quai-builder'];
+      removePluginLoadPaths(plugins, 'entropic-quai-builder');
+    }
+  }
+
+  if (Array.isArray(plugins.deny)) {
+    plugins.deny = plugins.deny.filter((entry) => entry !== 'file-transfer');
+  }
+};
+
 const stripBundledPluginOverrides = (value) => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return;
   const plugins = value.plugins;
@@ -520,10 +599,13 @@ try {
   const persisted = JSON.parse(fs.readFileSync(persistedPath, 'utf8'));
   pruneLegacyControlUiFallback(current);
   pruneLegacyControlUiFallback(persisted);
+  pruneLegacyValidationFailures(current);
+  pruneLegacyValidationFailures(persisted);
   stripBundledPluginOverrides(current);
   stripBundledPluginOverrides(persisted);
   const merged = mergePreferCurrent(persisted, current);
   pruneLegacyControlUiFallback(merged);
+  pruneLegacyValidationFailures(merged);
   stripBundledPluginOverrides(merged);
   fs.writeFileSync(currentPath, JSON.stringify(merged, null, 2));
   fs.writeFileSync(persistedPath, JSON.stringify(merged, null, 2));

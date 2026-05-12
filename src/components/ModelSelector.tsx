@@ -5,6 +5,7 @@ import { Model } from "../lib/auth";
 
 // Proxy-mode models (routed through Entropic backend)
 export const PROXY_MODELS: Model[] = [
+  { id: "moonshotai/kimi-k2.6", name: "Kimi K2.6", provider: "MoonshotAI", tier: "premium", group: "OpenRouter" },
   { id: "venice/kimi-k2-6", name: "Kimi K2.6 (Private)", provider: "Venice", tier: "premium" },
   { id: "venice/claude-opus-4-7", name: "Claude Opus 4.7 (Deanonymized)", provider: "Venice", tier: "premium" },
   { id: "venice/openai-gpt-55", name: "GPT-5.5 (Deanonymized)", provider: "Venice", tier: "premium" },
@@ -13,7 +14,6 @@ export const PROXY_MODELS: Model[] = [
   { id: "venice/venice-uncensored-1-2", name: "Venice Uncensored 1.2 (Private)", provider: "Venice", tier: "fast" },
   { id: "venice/openai-gpt-oss-120b", name: "GPT OSS 120B (Private)", provider: "Venice", tier: "fast" },
   { id: "openrouter/free", name: "OpenRouter Free (Router)", provider: "OpenRouter", tier: "fast", group: "OpenRouter" },
-  { id: "moonshotai/kimi-k2.6", name: "Kimi K2.6", provider: "MoonshotAI", tier: "premium", group: "OpenRouter" },
   { id: "anthropic/claude-opus-4.7", name: "Claude Opus 4.7", provider: "Anthropic", tier: "premium", group: "OpenRouter" },
   { id: "anthropic/claude-opus-4-6", name: "Claude Opus 4.6", provider: "Anthropic", tier: "premium", group: "OpenRouter" },
   { id: "anthropic/claude-opus-4.5", name: "Claude Opus 4.5", provider: "Anthropic", tier: "premium", group: "OpenRouter" },

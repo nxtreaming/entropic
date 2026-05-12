@@ -51,11 +51,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ln -sfn /data/qmd-models /home/node/.cache/qmd/models && \
     chown -R node:node /data /home/node/.openclaw /home/node/.bun /home/node/.cache
 
+ARG ENTROPIC_INSTALL_DOCLING=0
 RUN python3 -m pip install --no-cache-dir --break-system-packages \
-    'docling>=2.64,<3' \
     openpyxl==3.1.5 \
     pytest==8.3.5 \
-    python-pptx==1.0.2
+    python-pptx==1.0.2 && \
+    if [ "$ENTROPIC_INSTALL_DOCLING" = "1" ]; then \
+      python3 -m pip install --no-cache-dir --break-system-packages 'docling>=2.64,<3'; \
+    fi
 
 # Install patchright's patched Chromium:
 # 1. Symlink to /usr/bin/chromium (OpenClaw's findChromeExecutableLinux() searches there)
@@ -111,6 +114,24 @@ RUN for skill in /app/bundled-skills/*/; do \
 
 RUN if [ -f /app/browser-service/package.json ]; then \
       cd /app/browser-service && npm install --omit=dev && cd /; \
+    fi
+
+RUN mkdir -p /app/node_modules/osc-progress && \
+    printf '{"name":"osc-progress","type":"module","exports":"./index.js"}\n' > /app/node_modules/osc-progress/package.json && \
+    printf 'export function supportsOscProgress() { return false; }\nexport function createOscProgressController() { return { start() {}, update() {}, done() {}, fail() {} }; }\n' > /app/node_modules/osc-progress/index.js
+
+# The compiled root dist imports Discord channel helpers directly. The Discord
+# extension vendors @buape/carbon under its own node_modules, so expose that
+# package at the root resolver location too.
+RUN if [ -d /app/dist/extensions/discord/node_modules/@buape/carbon ]; then \
+      mkdir -p /app/node_modules/@buape && \
+      ln -sfn /app/dist/extensions/discord/node_modules/@buape/carbon /app/node_modules/@buape/carbon; \
+      node -e 'const fs=require("fs"); const p="/app/dist/extensions/discord/node_modules/@buape/carbon/package.json"; const pkg=JSON.parse(fs.readFileSync(p,"utf8")); for (const key of [".","./*","./adapters/*"]) { if (pkg.exports?.[key]?.import && !pkg.exports[key].require) pkg.exports[key].require = pkg.exports[key].import; } fs.writeFileSync(p, JSON.stringify(pkg,null,2)+"\n");'; \
+    fi
+
+RUN PI_CODING_INDEX="/app/node_modules/@mariozechner/pi-coding-agent/dist/index.js" && \
+    if ! grep -q 'Legacy Entropic compatibility exports' "$PI_CODING_INDEX"; then \
+      printf '\n// Legacy Entropic compatibility exports.\nimport { createCodingTools as __entropicCreateCodingTools, createReadTool as __entropicCreateReadTool } from "./core/sdk.js";\nexport const codingTools = __entropicCreateCodingTools(process.cwd());\nexport const readTool = __entropicCreateReadTool(process.cwd());\n' >> "$PI_CODING_INDEX"; \
     fi
 
 RUN chmod +x /app/browser-service/office_tools.py && \

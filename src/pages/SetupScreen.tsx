@@ -2,11 +2,23 @@ import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-shell";
-import { Loader2, CheckCircle2, XCircle, AlertTriangle, Copy } from "lucide-react";
+import {
+  ArrowRight,
+  CheckCircle2,
+  Copy,
+  Loader2,
+  XCircle,
+  AlertTriangle,
+} from "lucide-react";
 import entropicLogo from "../assets/entropic-logo.png";
 import quaiWordmarkDark from "../assets/quai-header-white.png";
 import quaiWordmarkLight from "../assets/quai-logo.svg";
-import { entropicSitePath, hostedFeaturesEnabled } from "../lib/buildProfile";
+import { entropicSitePath } from "../lib/buildProfile";
+import { STARTUP_USE_CASES } from "../lib/startupUseCases";
+import {
+  StartupUseCaseCard,
+  useSmoothStartupUseCase,
+} from "../components/StartupUseCaseCard";
 
 export type SetupProgress = {
   stage: string;
@@ -39,17 +51,6 @@ type SetupErrorDiagnosis = {
   technical: string;
   repairCommand?: string;
 };
-
-const EDUCATIONAL_FACTS = [
-  "Entropic runs OpenClaw in an isolated container so generated commands stay sandboxed.",
-  "Colima is a lightweight local VM runtime that Entropic uses on macOS for secure container execution.",
-  "Use Integrations to connect tools like Calendar or Gmail after setup completes.",
-  "Local Keys mode lets you use your own provider keys directly from Settings.",
-  ...(hostedFeaturesEnabled
-    ? ["Proxy mode uses Entropic credits and keeps model routing and billing centralized."]
-    : []),
-  "Jobs and Files are designed for longer-running automation, while Chat is best for quick iterations.",
-];
 
 const TERMS_URL = entropicSitePath("/terms");
 const PRIVACY_URL = entropicSitePath("/privacy");
@@ -252,6 +253,29 @@ function detectDarkTheme(): boolean {
   return window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ?? false;
 }
 
+function setupVisualProgressCap(progress: SetupProgress): number {
+  if (progress.complete) return 100;
+  if (progress.error) return progress.percent;
+
+  const stageCaps: Record<string, number> = {
+    cleanup: 14,
+    starting: 8,
+    vm: 44,
+    docker: 73,
+    wsl: 70,
+    image: 94,
+  };
+
+  return Math.max(
+    progress.percent,
+    stageCaps[progress.stage] ?? Math.min(96, progress.percent + 10),
+  );
+}
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, value));
+}
+
 export function SetupScreen({ onComplete, preview }: Props) {
   const [isRunning, setIsRunning] = useState(false);
   const [progress, setProgress] = useState<SetupProgress | null>(null);
@@ -260,8 +284,14 @@ export function SetupScreen({ onComplete, preview }: Props) {
   const [factIndex, setFactIndex] = useState(0);
   const [tosAccepted, setTosAccepted] = useState(false);
   const [isDarkTheme, setIsDarkTheme] = useState(() => detectDarkTheme());
+  const [visualPercent, setVisualPercent] = useState(0);
   const isPreview = Boolean(preview);
   const quaiWordmark = isDarkTheme ? quaiWordmarkDark : quaiWordmarkLight;
+  const {
+    activeIndex: activeDemoIndex,
+    isSwitching: promptIsSwitching,
+    useCase: setupDemo,
+  } = useSmoothStartupUseCase(factIndex);
 
   const activeProgress = useMemo(() => {
     if (!preview) {
@@ -302,6 +332,47 @@ export function SetupScreen({ onComplete, preview }: Props) {
   }, [preview, progress]);
   const activeIsRunning = preview ? preview.state === "running" : isRunning;
   const activeTosAccepted = preview ? Boolean(preview.tosAccepted) : tosAccepted;
+
+  useEffect(() => {
+    if (!activeProgress) {
+      setVisualPercent(0);
+      return;
+    }
+
+    if (activeProgress.complete) {
+      setVisualPercent(100);
+      return;
+    }
+
+    if (activeProgress.error) {
+      setVisualPercent(clampPercent(activeProgress.percent));
+      return;
+    }
+
+    const floor = clampPercent(activeProgress.percent);
+    const cap = setupVisualProgressCap(activeProgress);
+    setVisualPercent((current) => clampPercent(Math.min(cap, Math.max(current, floor))));
+
+    const interval = window.setInterval(() => {
+      setVisualPercent((current) => {
+        if (current < floor) {
+          return clampPercent(Math.min(cap, current + Math.max(1, (floor - current) * 0.35)));
+        }
+        if (current >= cap) {
+          return clampPercent(cap);
+        }
+        const trickle = Math.max(0.18, (cap - current) * 0.025);
+        return clampPercent(Math.min(cap, current + trickle));
+      });
+    }, 550);
+
+    return () => window.clearInterval(interval);
+  }, [
+    activeProgress?.stage,
+    activeProgress?.percent,
+    activeProgress?.complete,
+    activeProgress?.error,
+  ]);
 
   useEffect(() => {
     if (!isPreview && isRunning) {
@@ -348,14 +419,14 @@ export function SetupScreen({ onComplete, preview }: Props) {
     };
   }, []);
 
-  // Rotate educational facts during setup
+  // Rotate setup examples while the runtime is being prepared.
   useEffect(() => {
     if (!activeIsRunning || !activeProgress || activeProgress.complete || activeProgress.error) {
       return;
     }
     const interval = window.setInterval(() => {
-      setFactIndex((current) => (current + 1) % EDUCATIONAL_FACTS.length);
-    }, 5000);
+      setFactIndex((current) => (current + 1) % STARTUP_USE_CASES.length);
+    }, 4200);
     return () => window.clearInterval(interval);
   }, [activeIsRunning, activeProgress]);
 
@@ -493,29 +564,60 @@ export function SetupScreen({ onComplete, preview }: Props) {
             <button
               onClick={() => startSetup(false)}
               disabled={!activeTosAccepted}
-              className="w-full py-3 px-4 bg-violet-600 hover:bg-violet-700 disabled:bg-[var(--bg-secondary)] disabled:text-[var(--text-tertiary)] disabled:cursor-not-allowed text-white font-medium rounded-xl transition-colors"
+              className="w-full py-3 px-4 bg-violet-600 hover:bg-violet-700 disabled:bg-[var(--bg-secondary)] disabled:text-[var(--text-tertiary)] disabled:cursor-not-allowed text-white font-medium rounded-xl transition-colors flex items-center justify-center gap-2"
             >
-              Set Up Secure Sandbox
+              Continue
+              <ArrowRight className="h-4 w-4" />
             </button>
+            {!activeTosAccepted && (
+              <p className="mt-3 text-center text-xs text-[var(--text-tertiary)]">
+                Accept the terms above to continue.
+              </p>
+            )}
           </>
         )}
 
         {activeIsRunning && activeProgress && !activeProgress.complete && !activeProgress.error && (
-          <div className="text-center">
-            <Loader2 className="w-12 h-12 text-violet-600 animate-spin mx-auto mb-4" />
-            <p className="text-[var(--text-primary)] font-medium mb-2">{activeProgress.message}</p>
-            <div className="w-full bg-[var(--bg-tertiary)] rounded-full h-2 mb-2">
+          <div className="text-left">
+            <StartupUseCaseCard isSwitching={promptIsSwitching} useCase={setupDemo} />
+
+            <div className="mt-5">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-2">
+                  <Loader2 className="h-4 w-4 shrink-0 animate-spin text-violet-600" />
+                  <p className="text-sm font-medium leading-snug text-[var(--text-primary)]">
+                    {activeProgress.message}
+                  </p>
+                </div>
+                <p className="shrink-0 text-sm font-semibold text-[var(--text-secondary)]">
+                  {Math.round(visualPercent)}%
+                </p>
+              </div>
               <div
-                className="bg-violet-600 h-2 rounded-full transition-all duration-500"
-                style={{ width: `${activeProgress.percent}%` }}
-              />
-            </div>
-            <p className="text-[var(--text-tertiary)] text-sm">{activeProgress.percent}%</p>
-            <div className="mt-5 rounded-xl border border-violet-500/20 bg-violet-500/10 p-3 text-left">
-              <p className="text-[10px] uppercase tracking-wide text-violet-500 font-semibold mb-1">
-                Setup Fact
-              </p>
-              <p className="text-xs text-[var(--text-secondary)]">{EDUCATIONAL_FACTS[factIndex]}</p>
+                className="w-full bg-[var(--bg-tertiary)] rounded-full h-2 overflow-hidden"
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={Math.round(visualPercent)}
+              >
+                <div
+                  className="bg-violet-600 h-2 rounded-full transition-all duration-700 ease-out"
+                  style={{ width: `${visualPercent}%` }}
+                />
+              </div>
+              <div className="mt-4 flex items-center justify-center gap-1">
+                {STARTUP_USE_CASES.map((demo, index) => (
+                  <span
+                    key={demo.title}
+                    className={`h-1.5 rounded-full transition-all duration-300 ${
+                      index === activeDemoIndex
+                        ? "w-5 bg-violet-500"
+                        : "w-1.5 bg-[var(--border-primary)]"
+                    }`}
+                    aria-hidden="true"
+                  />
+                ))}
+              </div>
             </div>
           </div>
         )}
@@ -652,7 +754,6 @@ export function SetupScreen({ onComplete, preview }: Props) {
 
       {/* Footer */}
       <div className="mt-auto pt-8 flex flex-col items-center gap-1.5">
-        <p className="text-[var(--text-tertiary)] text-sm">Powered by OpenClaw</p>
         <a href="https://qu.ai" target="_blank" rel="noopener noreferrer">
           <img
             src={quaiWordmark}

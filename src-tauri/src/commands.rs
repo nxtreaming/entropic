@@ -17043,6 +17043,86 @@ pub async fn get_setup_progress(state: State<'_, AppState>) -> Result<SetupProgr
     Ok(progress.clone())
 }
 
+fn write_setup_progress(
+    state: &State<'_, AppState>,
+    stage: &str,
+    message: impl Into<String>,
+    percent: u8,
+) {
+    if let Ok(mut progress) = state.setup_progress.lock() {
+        *progress = SetupProgress {
+            stage: stage.to_string(),
+            message: message.into(),
+            percent,
+            complete: false,
+            error: None,
+        };
+    }
+}
+
+fn runtime_image_preload_percent(elapsed: Duration) -> u8 {
+    let millis = elapsed.as_millis() as u64;
+    if millis < 12_000 {
+        return 76 + ((millis * 6) / 12_000) as u8;
+    }
+    if millis < 45_000 {
+        return 82 + (((millis - 12_000) * 6) / 33_000) as u8;
+    }
+    std::cmp::min(89, 88 + (((millis - 45_000) * 2) / 90_000) as u8)
+}
+
+fn runtime_image_preload_message(elapsed: Duration) -> &'static str {
+    let seconds = elapsed.as_secs();
+    if seconds < 12 {
+        "Preparing secure runtime image..."
+    } else if seconds < 45 {
+        "Loading runtime layers into the local sandbox..."
+    } else if seconds < 90 {
+        "Optimizing runtime cache for faster future starts..."
+    } else {
+        "Still loading runtime layers. First setup can take a few minutes on slower disks..."
+    }
+}
+
+async fn ensure_runtime_image_with_setup_progress(state: &State<'_, AppState>) -> String {
+    let preload_started = Instant::now();
+    let preload = tokio::task::spawn_blocking(ensure_runtime_image);
+    tokio::pin!(preload);
+
+    loop {
+        tokio::select! {
+            result = &mut preload => {
+                return match result {
+                    Ok(Ok(())) => {
+                        println!(
+                            "[Entropic] Runtime image preload finished in {}ms",
+                            preload_started.elapsed().as_millis()
+                        );
+                        "Runtime image ready.".to_string()
+                    }
+                    Ok(Err(e)) => {
+                        println!("[Entropic] Runtime image preload deferred/failed: {}", e);
+                        "Runtime image preload deferred; first sandbox start will retry.".to_string()
+                    }
+                    Err(e) => {
+                        println!("[Entropic] Runtime image preload task error: {}", e);
+                        "Runtime image preload deferred; first sandbox start will retry.".to_string()
+                    }
+                };
+            }
+            _ = sleep(Duration::from_millis(700)) => {
+                let elapsed = preload_started.elapsed();
+                write_setup_progress(
+                    state,
+                    "image",
+                    runtime_image_preload_message(elapsed),
+                    runtime_image_preload_percent(elapsed),
+                );
+            }
+        }
+    }
+}
+
 async fn run_first_time_setup_internal(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -17308,10 +17388,22 @@ async fn run_first_time_setup_internal(
                     *progress = SetupProgress {
                         stage: "image".to_string(),
                         message: format!(
-                            "Downloading OpenClaw runtime image... ({} MB)",
+                            "Downloading secure runtime image... ({} MB)",
                             runtime_partial_mb
                         ),
-                        percent: 72,
+                        percent: {
+                            let partial_bytes = runtime_cached_tar_partial_path()
+                                .and_then(|path| path.metadata().ok().map(|m| m.len()))
+                                .unwrap_or(0);
+                            let expected_bytes = read_cached_runtime_manifest()
+                                .and_then(|manifest| manifest.selected_runtime_size_bytes())
+                                .unwrap_or(0);
+                            if expected_bytes > 0 && partial_bytes > 0 {
+                                72 + std::cmp::min(13, (partial_bytes * 13 / expected_bytes) as u8)
+                            } else {
+                                72
+                            }
+                        },
                         complete: false,
                         error: None,
                     };
@@ -17396,32 +17488,14 @@ async fn run_first_time_setup_internal(
         let mut progress = state.setup_progress.lock().map_err(|e| e.to_string())?;
         *progress = SetupProgress {
             stage: "image".to_string(),
-            message: "Preparing OpenClaw runtime image...".to_string(),
+            message: "Preparing secure runtime image...".to_string(),
             percent: 75,
             complete: false,
             error: None,
         };
     }
 
-    let preload_started = Instant::now();
-    let preload = tokio::task::spawn_blocking(ensure_runtime_image).await;
-    let preload_message = match preload {
-        Ok(Ok(())) => {
-            println!(
-                "[Entropic] Runtime image preload finished in {}ms",
-                preload_started.elapsed().as_millis()
-            );
-            "Runtime image ready.".to_string()
-        }
-        Ok(Err(e)) => {
-            println!("[Entropic] Runtime image preload deferred/failed: {}", e);
-            "Runtime image preload deferred; first sandbox start will retry.".to_string()
-        }
-        Err(e) => {
-            println!("[Entropic] Runtime image preload task error: {}", e);
-            "Runtime image preload deferred; first sandbox start will retry.".to_string()
-        }
-    };
+    let preload_message = ensure_runtime_image_with_setup_progress(&state).await;
 
     {
         let mut progress = state.setup_progress.lock().map_err(|e| e.to_string())?;

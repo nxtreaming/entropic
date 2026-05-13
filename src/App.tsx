@@ -140,18 +140,21 @@ function AppContent() {
       return;
     }
 
-    // Pre-load local trial credits for unauthenticated users
-    // This ensures backend session is initialized before features are used
+    // Pre-load local trial credits for unauthenticated users without holding
+    // the startup path hostage. Dashboard and chat refresh the balance again
+    // before spending credits.
     if (!isAuthenticated && isAuthConfigured) {
-      try {
-        const balance = await getLocalCreditBalance();
-        console.log("[App] Local trial balance pre-loaded:", balance.balance_cents, "cents");
-        clientLog("app.trial_credits.preload.success", { balance_cents: balance.balance_cents });
-      } catch (error) {
-        console.warn("[App] Failed to pre-load trial credits:", error);
-        clientLog("app.trial_credits.preload.failed", { error: String(error) });
-        // Continue anyway - non-blocking
-      }
+      void getLocalCreditBalance()
+        .then((balance) => {
+          console.log("[App] Local trial balance pre-loaded:", balance.balance_cents, "cents");
+          clientLog("app.trial_credits.preload.success", {
+            balance_cents: balance.balance_cents,
+          });
+        })
+        .catch((error) => {
+          console.warn("[App] Failed to pre-load trial credits:", error);
+          clientLog("app.trial_credits.preload.failed", { error: String(error) });
+        });
     }
 
     // Onboarding is complete, check runtime status

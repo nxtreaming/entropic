@@ -5,7 +5,6 @@ import { open } from "@tauri-apps/plugin-shell";
 import { Cpu, Image, Loader2, Shield, User } from "lucide-react";
 import { Layout, Page } from "../components/Layout";
 import {
-  SANDBOX_STARTUP_FACTS,
   SandboxStartupOverlay,
   type GatewayStartupStage,
 } from "../components/SandboxStartupOverlay";
@@ -28,6 +27,7 @@ import {
   stopIntegrationRefreshLoop,
 } from "../lib/integrations";
 import { getGatewayStatusCached } from "../lib/gateway-status";
+import { STARTUP_USE_CASES } from "../lib/startupUseCases";
 import {
   LOCAL_AUDIO_UNDERSTANDING_MODEL_IDS,
   LOCAL_IMAGE_GENERATION_MODEL_IDS,
@@ -1020,7 +1020,7 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
       return;
     }
     const interval = window.setInterval(() => {
-      setStartupFactIndex((current) => (current + 1) % SANDBOX_STARTUP_FACTS.length);
+      setStartupFactIndex((current) => (current + 1) % STARTUP_USE_CASES.length);
     }, 4500);
     return () => window.clearInterval(interval);
   }, [showGatewayStartup]);

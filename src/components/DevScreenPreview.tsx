@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { SetupScreen, type SetupProgress, type SetupScreenPreviewState } from "../pages/SetupScreen";
 import {
-  SANDBOX_STARTUP_FACTS,
   SandboxStartupOverlay,
   type GatewayStartupStage,
 } from "./SandboxStartupOverlay";
+import { STARTUP_USE_CASES } from "../lib/startupUseCases";
 
 type DevScreenKind = "setup" | "startup";
 
-const STARTUP_STAGES: GatewayStartupStage[] = ["credits", "token", "launch", "health"];
+const STARTUP_STAGES: GatewayStartupStage[] = ["credits", "token", "launch", "health", "connect"];
 const SETUP_STATES: SetupScreenPreviewState[] = ["idle", "running", "complete", "error"];
 const PREVIEW_SETUP_ERROR = `colima start --profile entropic-vz
 error validating sha sum: expected sha256 checksum to match downloaded image
@@ -23,7 +23,9 @@ function parseSetupState(raw: string | null): SetupScreenPreviewState {
 }
 
 function parseStartupStage(raw: string | null): GatewayStartupStage {
-  return raw === "token" || raw === "launch" || raw === "health" ? raw : "credits";
+  return raw === "token" || raw === "launch" || raw === "health" || raw === "connect"
+    ? raw
+    : "credits";
 }
 
 function buildPreviewProgress(state: SetupScreenPreviewState): SetupProgress | null {
@@ -95,7 +97,7 @@ export function DevScreenPreview() {
 
   useEffect(() => {
     const interval = window.setInterval(() => {
-      setFactIndex((current) => (current + 1) % SANDBOX_STARTUP_FACTS.length);
+      setFactIndex((current) => (current + 1) % STARTUP_USE_CASES.length);
     }, 4500);
     return () => window.clearInterval(interval);
   }, []);

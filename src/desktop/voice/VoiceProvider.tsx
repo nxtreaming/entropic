@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Mic, Volume2 } from "lucide-react";
+import { Loader2, Mic, Square } from "lucide-react";
 import clsx from "clsx";
 import type { DesktopAction } from "../actions";
 import { validateDesktopAction } from "../actions";
@@ -262,10 +262,10 @@ export function VoiceProvider({
   captureActiveRef.current = captureActive;
   const captureSupported = liveSpeech.isSupported || recorder.isSupported;
   const busy = captureActive || isTranscribing || state === "thinking" || voiceResponseActive;
-  const voiceSpeaking = voiceResponseActive && state !== "thinking";
-  const canInterruptVoiceReply = voiceSpeaking && captureSupported;
+  const canStopVoiceCapture = conversationActive && captureActive;
   const canCancelVoiceTurn =
-    conversationActive && (captureActive || state === "transcribing" || isTranscribing);
+    conversationActive &&
+    (state === "transcribing" || isTranscribing || state === "thinking" || voiceResponseActive);
   const busyLabel =
     voiceResponseActive
       ? state === "thinking"
@@ -296,25 +296,27 @@ export function VoiceProvider({
     setMessage(listeningMessage());
     setTranscript(null);
     window.dispatchEvent(new Event("entropic-voice-capture-started"));
-    if (liveSpeech.isSupported && liveSpeech.start()) {
+    if (recorder.isSupported) {
+      void recorder.startRecording();
       return;
     }
-    void recorder.startRecording();
+    if (liveSpeech.isSupported) {
+      liveSpeech.start();
+    }
+  }
+
+  function stopVoiceReplyPlayback() {
+    window.dispatchEvent(new Event("entropic-voice-response-stop-requested"));
   }
 
   function cancelVoiceTurn() {
     activeVoiceTurnRef.current += 1;
     setVoiceConversationActive(false);
     setVoiceResponseIsActive(false);
+    stopVoiceReplyPlayback();
     liveSpeech.abort();
     recorder.cancelRecording();
     clearVoiceState();
-  }
-
-  function interruptVoiceReplyAndStartCapture() {
-    setVoiceResponseIsActive(false);
-    clearVoiceState();
-    startVoiceCapture();
   }
 
   function stopVoiceCapture() {
@@ -329,6 +331,8 @@ export function VoiceProvider({
 
   function stopVoiceConversation() {
     setVoiceConversationActive(false);
+    setVoiceResponseIsActive(false);
+    stopVoiceReplyPlayback();
     if (captureActive) {
       stopVoiceCapture();
       return;
@@ -380,8 +384,8 @@ export function VoiceProvider({
         <button
           type="button"
           onClick={() => {
-            if (canInterruptVoiceReply) {
-              interruptVoiceReplyAndStartCapture();
+            if (canStopVoiceCapture) {
+              stopVoiceCapture();
               return;
             }
             if (canCancelVoiceTurn) {
@@ -395,35 +399,34 @@ export function VoiceProvider({
             }
             startVoiceCapture();
           }}
-          disabled={!captureSupported || (busy && !canCancelVoiceTurn && !canInterruptVoiceReply)}
+          disabled={(!captureSupported && !conversationActive) || (busy && !canStopVoiceCapture && !canCancelVoiceTurn)}
           className={clsx(
             "inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-white/25 bg-black/40 text-white shadow-2xl backdrop-blur-xl transition",
             conversationActive && !captureActive && "border-emerald-300/50 bg-emerald-500/20 text-emerald-100",
             captureActive && "border-red-300/60 bg-red-500/30 text-red-100 shadow-red-500/20",
             captureActive && "animate-pulse",
-            voiceResponseActive && !canInterruptVoiceReply && "cursor-not-allowed border-sky-300/50 bg-sky-500/20 text-sky-100 opacity-80",
-            canInterruptVoiceReply && "border-[var(--purple-accent)]/60 bg-[var(--purple-accent)]/25 text-white shadow-[0_16px_42px_rgba(91,36,139,0.32)] hover:bg-[var(--purple-accent)]/35",
+            (canCancelVoiceTurn || voiceResponseActive) && "border-red-300/60 bg-red-500/30 text-red-100 shadow-red-500/20",
             !captureSupported && "cursor-not-allowed opacity-50",
           )}
           title={
             captureSupported
-              ? canInterruptVoiceReply
-                ? "Interrupt reply and speak"
+              ? canStopVoiceCapture
+                ? "Stop recording"
                 : canCancelVoiceTurn
                   ? "Stop voice conversation"
-                : voiceButtonLabel
+                  : voiceButtonLabel
               : "Microphone unavailable"
           }
           aria-label={
-            canInterruptVoiceReply
-              ? "Interrupt reply and speak"
+            canStopVoiceCapture
+              ? "Stop recording"
               : canCancelVoiceTurn
                 ? "Stop voice conversation"
                 : voiceButtonLabel
           }
         >
-          {voiceSpeaking ? (
-            <Mic className="h-5 w-5 animate-pulse" />
+          {canStopVoiceCapture || canCancelVoiceTurn ? (
+            <Square className="h-5 w-5 fill-current" />
           ) : busy && !captureActive ? (
             <Loader2 className="h-5 w-5 animate-spin" />
           ) : (
@@ -432,11 +435,19 @@ export function VoiceProvider({
         </button>
       </div>
       <VoiceOverlay
-        state={state === "error" ? state : "idle"}
+        state={voiceResponseActive ? (state === "thinking" ? "thinking" : "speaking") : state}
         message={message}
         transcript={transcript}
-        cancelLabel="Cancel"
-        onCancel={state === "error" ? clearVoiceState : undefined}
+        cancelLabel={state === "error" ? "Dismiss" : "Stop"}
+        onCancel={
+          state === "error"
+            ? clearVoiceState
+            : canStopVoiceCapture
+              ? stopVoiceCapture
+              : canCancelVoiceTurn
+                ? cancelVoiceTurn
+                : undefined
+        }
       />
     </>
   );

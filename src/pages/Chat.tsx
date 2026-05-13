@@ -24,6 +24,7 @@ import {
   FileText,
   Music2,
   Mic,
+  Square,
 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-shell";
 import { invoke } from "@tauri-apps/api/core";
@@ -1982,19 +1983,6 @@ export function Chat({
     setComposerModeForSession(sessionKey, "chat");
     sendAfterLiveVoiceStopRef.current = false;
     setError(null);
-    if (liveSpeech.isSupported) {
-      liveVoiceDraftBaseRef.current = {
-        sessionKey,
-        baseText: draftsRef.current[sessionKey] || "",
-      };
-      setThinkingStatus("Listening");
-      if (liveSpeech.start({ continuous: true, autoRestart: true })) {
-        resizeChatComposer();
-        return;
-      }
-      liveVoiceDraftBaseRef.current = null;
-      setThinkingStatus(null);
-    }
     if (streamingSpeech.isSupported) {
       liveVoiceDraftBaseRef.current = {
         sessionKey,
@@ -2002,6 +1990,19 @@ export function Chat({
       };
       setThinkingStatus("Listening");
       if (await streamingSpeech.start()) {
+        resizeChatComposer();
+        return;
+      }
+      liveVoiceDraftBaseRef.current = null;
+      setThinkingStatus(null);
+    }
+    if (liveSpeech.isSupported) {
+      liveVoiceDraftBaseRef.current = {
+        sessionKey,
+        baseText: draftsRef.current[sessionKey] || "",
+      };
+      setThinkingStatus("Listening");
+      if (liveSpeech.start({ continuous: true, autoRestart: true })) {
         resizeChatComposer();
         return;
       }
@@ -2023,6 +2024,19 @@ export function Chat({
       return;
     }
     void handleSend();
+  }
+
+  function stopChatVoiceCapture() {
+    sendAfterLiveVoiceStopRef.current = false;
+    if (liveSpeech.isListening) {
+      setThinkingStatus("Finalizing recording");
+      liveSpeech.stop();
+      return;
+    }
+    if (streamingSpeech.isRecording) {
+      setThinkingStatus("Transcribing recording");
+      streamingSpeech.stop();
+    }
   }
 
   function setChatDraftForSession(sessionKey: string, nextValue: string) {
@@ -2047,9 +2061,14 @@ export function Chat({
   }
 
   function finishLiveVoiceCapture(text: string) {
+    const normalized = cleanRecordedVoiceTranscript(text).trim();
+    const hadBase = liveVoiceDraftBaseRef.current !== null;
     updateLiveVoiceDraft(text);
     liveVoiceDraftBaseRef.current = null;
     setThinkingStatus(null);
+    if (!normalized && hadBase && !sendAfterLiveVoiceStopRef.current) {
+      setError("I didn't catch any speech in that recording. Try again.");
+    }
     if (sendAfterLiveVoiceStopRef.current) {
       sendAfterLiveVoiceStopRef.current = false;
       window.setTimeout(() => {
@@ -3434,8 +3453,10 @@ export function Chat({
     }
 
     window.addEventListener("entropic-voice-capture-started", stopVoiceReplyAudio);
+    window.addEventListener("entropic-voice-response-stop-requested", stopVoiceReplyAudio);
     return () => {
       window.removeEventListener("entropic-voice-capture-started", stopVoiceReplyAudio);
+      window.removeEventListener("entropic-voice-response-stop-requested", stopVoiceReplyAudio);
     };
   }, []);
 
@@ -7690,7 +7711,6 @@ export function Chat({
     : "";
   const chatVoiceCaptureActive = liveSpeech.isListening || streamingSpeech.isRecording;
   const chatHasSendableContent = activeDraft.trim().length > 0 || pendingAttachments.length > 0;
-  const chatComposerControlIsSend = chatVoiceCaptureActive || chatHasSendableContent;
   const composerSendDisabled =
     (!activeDraft.trim() &&
       pendingAttachments.length === 0 &&
@@ -7993,52 +8013,42 @@ export function Chat({
               style={{ overflow: 'hidden' }}
             />
             {activeComposerMode === "chat" ? (
-              <button
-                type="button"
-                onClick={
-                  chatComposerControlIsSend
-                    ? handleComposerSend
-                    : () => void startChatVoiceCapture()
-                }
-                disabled={
-                  chatComposerControlIsSend
-                    ? composerSendDisabled
-                    : chatMicDisabled || !(liveSpeech.isSupported || streamingSpeech.isSupported)
-                }
-                className={clsx(
-                  "relative inline-flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl border font-medium shadow-sm transition-all duration-200 ease-out active:scale-95 disabled:cursor-not-allowed disabled:opacity-50",
-                  chatComposerControlIsSend
-                    ? "border-[var(--purple-accent-hover)]/70 bg-[var(--purple-accent)] text-white shadow-[0_10px_26px_rgba(91,36,139,0.26)] hover:bg-[var(--purple-accent-hover)] hover:shadow-[0_12px_30px_rgba(91,36,139,0.34)]"
-                    : "border-[var(--border-default)] bg-[var(--bg-card)] text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]",
-                )}
-                title={
-                  chatComposerControlIsSend
-                    ? "Send"
-                    : liveSpeech.isSupported || streamingSpeech.isSupported
-                      ? "Record"
-                      : "Microphone unavailable"
-                }
-                aria-label={chatComposerControlIsSend ? "Send" : "Record"}
-              >
-                <span className="relative h-5 w-5">
-                  <Mic
-                    className={clsx(
-                      "absolute inset-0 m-auto h-[18px] w-[18px] transition-all duration-200 ease-out",
-                      chatComposerControlIsSend
-                        ? "scale-75 rotate-12 opacity-0"
-                        : "scale-100 rotate-0 opacity-100",
-                    )}
-                  />
-                  <Send
-                    className={clsx(
-                      "absolute inset-0 m-auto h-[18px] w-[18px] transition-all duration-200 ease-out",
-                      chatComposerControlIsSend
-                        ? "scale-100 translate-x-0 opacity-100"
-                        : "scale-75 -translate-x-1 opacity-0",
-                    )}
-                  />
-                </span>
-              </button>
+              <>
+                {chatVoiceCaptureActive ? (
+                  <button
+                    type="button"
+                    onClick={stopChatVoiceCapture}
+                    className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-red-400/60 bg-red-500/15 text-red-500 shadow-sm transition-all duration-200 ease-out hover:bg-red-500/25 active:scale-95"
+                    title="Stop recording"
+                    aria-label="Stop recording"
+                  >
+                    <Square className="h-[17px] w-[17px] fill-current" />
+                  </button>
+                ) : null}
+                {chatHasSendableContent ? (
+                  <button
+                    type="button"
+                    onClick={handleComposerSend}
+                    disabled={composerSendDisabled}
+                    className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[var(--purple-accent-hover)]/70 bg-[var(--purple-accent)] text-white shadow-[0_10px_26px_rgba(91,36,139,0.26)] transition-all duration-200 ease-out hover:bg-[var(--purple-accent-hover)] hover:shadow-[0_12px_30px_rgba(91,36,139,0.34)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+                    title="Send"
+                    aria-label="Send"
+                  >
+                    <Send className="h-[18px] w-[18px]" />
+                  </button>
+                ) : !chatVoiceCaptureActive ? (
+                  <button
+                    type="button"
+                    onClick={() => void startChatVoiceCapture()}
+                    disabled={chatMicDisabled || !(liveSpeech.isSupported || streamingSpeech.isSupported)}
+                    className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[var(--border-default)] bg-[var(--bg-card)] text-[var(--text-primary)] shadow-sm transition-all duration-200 ease-out hover:bg-[var(--bg-tertiary)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+                    title={liveSpeech.isSupported || streamingSpeech.isSupported ? "Record" : "Microphone unavailable"}
+                    aria-label={liveSpeech.isSupported || streamingSpeech.isSupported ? "Record" : "Microphone unavailable"}
+                  >
+                    <Mic className="h-[18px] w-[18px]" />
+                  </button>
+                ) : null}
+              </>
             ) : (
               <button
                 type="button"

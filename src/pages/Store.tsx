@@ -1316,7 +1316,7 @@ export function Store({
           : null;
         return {
           ...integration,
-          configured: entry?.configured ?? integration.configured,
+          configured: entry ? entry.configured ?? integration.configured : false,
           connected: Boolean(entry && entry.connected && !entry.stale),
           stale: entry?.stale,
           email: entry?.email,

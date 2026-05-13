@@ -1,4 +1,4 @@
-import { Loader2, Mic } from "lucide-react";
+import { Loader2, Mic, Square } from "lucide-react";
 
 type VoiceOverlayProps = {
   state: "idle" | "listening" | "transcribing" | "thinking" | "speaking" | "error";
@@ -43,8 +43,9 @@ export function VoiceOverlay({
             <button
               type="button"
               onClick={onCancel}
-              className="rounded-md px-2 py-1 text-xs text-[var(--text-secondary)] hover:bg-[var(--system-gray-6)]"
+              className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-[var(--text-secondary)] hover:bg-[var(--system-gray-6)]"
             >
+              {cancelLabel.toLowerCase() === "stop" ? <Square className="h-3 w-3 fill-current" /> : null}
               {cancelLabel}
             </button>
           ) : null}

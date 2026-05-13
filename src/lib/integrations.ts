@@ -4,7 +4,8 @@ import { Store } from "@tauri-apps/plugin-store";
 import { createGatewayClient } from "./gateway";
 import { getGatewayStatusCached } from "./gateway-status";
 import { resolveGatewayAuth } from "./gateway-auth";
-import { apiRequest } from "./auth";
+import { ApiRequestError, apiRequest } from "./auth";
+import { clientLog } from "./clientLog";
 import {
   loadIntegrationSecret,
   saveIntegrationSecret,
@@ -309,13 +310,35 @@ export async function connectIntegration(
   }
 
   if (isHostedOAuthIntegrationProvider(provider)) {
-    const result = await apiRequest<{ url: string }>("/integrations/connect", {
-      method: "POST",
-      body: JSON.stringify({
+    let result: { url: string };
+    try {
+      result = await apiRequest<{ url: string }>("/integrations/connect", {
+        method: "POST",
+        body: JSON.stringify({
+          provider,
+          redirect_uri: INTEGRATIONS_REDIRECT_URL,
+        }),
+      });
+    } catch (err) {
+      const apiError = err instanceof ApiRequestError ? err : null;
+      clientLog("integration.connect.failed", {
         provider,
-        redirect_uri: INTEGRATIONS_REDIRECT_URL,
-      }),
-    });
+        status: apiError?.status ?? null,
+        kind: apiError?.kind ?? null,
+        message: err instanceof Error ? err.message : String(err),
+        data: apiError?.data ?? null,
+      });
+      const detail =
+        apiError?.data?.error?.message ||
+        apiError?.data?.message ||
+        apiError?.data?.raw ||
+        (err instanceof Error ? err.message : String(err));
+      throw new Error(
+        detail && detail !== "Failed to initiate integration link"
+          ? `${detail}`
+          : `${provider} is not available for hosted OAuth yet. The hosted integration may be unconfigured on the API.`
+      );
+    }
     if (result?.url) {
       try {
         await open(result.url);

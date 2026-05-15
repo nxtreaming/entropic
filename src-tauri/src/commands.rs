@@ -15538,7 +15538,9 @@ fn telegram_runtime_fix_hint(
     last_error.map(|_| "Restart the gateway after saving the Telegram bot token. If this repeats, rebuild the runtime image.".to_string())
 }
 
-fn get_telegram_runtime_health_for_container(container: &str) -> Result<TelegramRuntimeHealth, String> {
+fn get_telegram_runtime_health_for_container(
+    container: &str,
+) -> Result<TelegramRuntimeHealth, String> {
     let script = r#"const fs=require('fs');
 const path=require('path');
 
@@ -15608,10 +15610,8 @@ const path=require('path');
     let probe: TelegramRuntimeHealthProbe = serde_json::from_str(output.trim())
         .map_err(|e| format!("Failed to parse Telegram runtime health: {}", e))?;
     let last_error = latest_telegram_startup_error(container).or(probe.probe_error);
-    let fix_hint = telegram_runtime_fix_hint(
-        last_error.as_deref(),
-        probe.runtime_config_api_compatible,
-    );
+    let fix_hint =
+        telegram_runtime_fix_hint(last_error.as_deref(), probe.runtime_config_api_compatible);
 
     Ok(TelegramRuntimeHealth {
         connected: probe.connected,
@@ -15644,7 +15644,9 @@ pub async fn get_telegram_runtime_health() -> Result<TelegramRuntimeHealth, Stri
             channel_running: false,
             runtime_config_api_compatible: None,
             last_error: None,
-            fix_hint: Some("Start the gateway, then message your Telegram bot with /start.".to_string()),
+            fix_hint: Some(
+                "Start the gateway, then message your Telegram bot with /start.".to_string(),
+            ),
         });
     };
 

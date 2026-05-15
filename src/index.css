@@ -1,6 +1,5 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@config "../tailwind.config.js";
 
 :root {
   --font-sans: "Geist Sans", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -295,21 +294,27 @@ body {
   }
 
   .btn-primary {
-    @apply btn bg-[var(--text-primary)] text-[var(--bg-app)] shadow-sm;
+    @apply inline-flex items-center justify-center px-4 py-1.5 rounded-lg font-medium active:scale-95 bg-[var(--text-primary)] text-[var(--bg-app)] shadow-sm;
+    font-size: 13px;
+    transition: color 0.15s, background-color 0.15s, border-color 0.15s, box-shadow 0.15s, transform 0.1s;
   }
   .btn-primary:hover {
     opacity: 0.88;
   }
 
   .btn-secondary {
-    @apply btn bg-[var(--bg-card)] text-[var(--text-primary)] border border-[var(--border-default)] shadow-sm;
+    @apply inline-flex items-center justify-center px-4 py-1.5 rounded-lg font-medium active:scale-95 bg-[var(--bg-card)] text-[var(--text-primary)] border border-[var(--border-default)] shadow-sm;
+    font-size: 13px;
+    transition: color 0.15s, background-color 0.15s, border-color 0.15s, box-shadow 0.15s, transform 0.1s;
   }
   .btn-secondary:hover {
     background-color: var(--bg-tertiary);
   }
 
   .btn-ghost {
-    @apply btn bg-transparent text-[var(--text-secondary)];
+    @apply inline-flex items-center justify-center px-4 py-1.5 rounded-lg font-medium active:scale-95 bg-transparent text-[var(--text-secondary)];
+    font-size: 13px;
+    transition: color 0.15s, background-color 0.15s, border-color 0.15s, box-shadow 0.15s, transform 0.1s;
   }
   .btn-ghost:hover {
     background-color: var(--border-subtle);

@@ -15456,42 +15456,198 @@ pub async fn approve_pairing(channel: String, code: String) -> Result<String, St
     result
 }
 
-#[tauri::command]
-pub async fn get_telegram_connection_status() -> Result<bool, String> {
-    let container = if named_gateway_container_exists(OPENCLAW_CONTAINER, true) {
-        OPENCLAW_CONTAINER
-    } else if named_gateway_container_exists(LEGACY_OPENCLAW_CONTAINER, true) {
-        LEGACY_OPENCLAW_CONTAINER
-    } else {
-        return Ok(false);
-    };
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TelegramRuntimeHealthProbe {
+    connected: bool,
+    enabled: bool,
+    configured: bool,
+    runtime_config_api_compatible: Option<bool>,
+    probe_error: Option<String>,
+}
 
-    // Treat Telegram as "connected" once any account-scoped pairing allowFrom store
-    // has at least one approved sender.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelegramRuntimeHealth {
+    connected: bool,
+    enabled: bool,
+    configured: bool,
+    container_running: bool,
+    channel_running: bool,
+    runtime_config_api_compatible: Option<bool>,
+    last_error: Option<String>,
+    fix_hint: Option<String>,
+}
+
+fn latest_telegram_startup_error(container: &str) -> Option<String> {
+    let output = docker_command()
+        .args(["logs", "--tail", "600", container])
+        .output()
+        .ok()?;
+    let logs = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    for line in logs.lines().rev() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some((_, detail)) = line.split_once("[telegram] channel startup failed:") {
+            return Some(detail.trim().to_string());
+        }
+        if line.contains("[telegram") {
+            if let Some((_, detail)) = line.split_once("channel startup failed:") {
+                return Some(detail.trim().to_string());
+            }
+            if let Some((_, detail)) = line.split_once("channel exited:") {
+                return Some(detail.trim().to_string());
+            }
+        }
+        if line.contains("getRuntimeConfig is not a function") {
+            return Some("getRuntimeConfig is not a function".to_string());
+        }
+    }
+    None
+}
+
+fn telegram_runtime_fix_hint(
+    last_error: Option<&str>,
+    runtime_config_api_compatible: Option<bool>,
+) -> Option<String> {
+    if runtime_config_api_compatible == Some(false)
+        || last_error
+            .map(|error| error.contains("getRuntimeConfig is not a function"))
+            .unwrap_or(false)
+    {
+        return Some(
+            "The OpenClaw runtime image is missing the Telegram config compatibility API. Rebuild the runtime image and restart the gateway."
+                .to_string(),
+        );
+    }
+
+    last_error.map(|_| "Restart the gateway after saving the Telegram bot token. If this repeats, rebuild the runtime image.".to_string())
+}
+
+fn get_telegram_runtime_health_for_container(container: &str) -> Result<TelegramRuntimeHealth, String> {
     let script = r#"const fs=require('fs');
 const path=require('path');
-const dir='/data/credentials';
-let connected=false;
-let paths=[];
-try {
-  paths=fs.readdirSync(dir)
-    .filter(name => /^telegram(?:-[^/]+)?-allowFrom\.json$/.test(name))
-    .map(name => path.join(dir, name));
-} catch {}
-for (const p of paths) {
+
+(async () => {
+  function readJson(file) {
+    try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
+  }
+
+  const cfg =
+    readJson('/home/node/.openclaw/openclaw.json') ||
+    readJson('/data/.openclaw/openclaw.json') ||
+    readJson('/data/openclaw.json') ||
+    {};
+  const channels = cfg.channels && typeof cfg.channels === 'object' ? cfg.channels : {};
+  const telegram =
+    channels.telegram && typeof channels.telegram === 'object' ? channels.telegram :
+    cfg.telegram && typeof cfg.telegram === 'object' ? cfg.telegram :
+    {};
+  const configured = Boolean(
+    String(telegram.botToken || telegram.token || process.env.TELEGRAM_BOT_TOKEN || '').trim()
+  );
+  const enabled = telegram.enabled === true || (configured && telegram.enabled !== false);
+
+  const credentialsDir = '/data/credentials';
+  let connected = false;
+  let credentialPaths = [];
   try {
-    const parsed=JSON.parse(fs.readFileSync(p,'utf8'));
-    if (Array.isArray(parsed.allowFrom) && parsed.allowFrom.some(v => String(v ?? '').trim().length > 0)) {
-      connected=true;
-      break;
-    }
+    credentialPaths = fs.readdirSync(credentialsDir)
+      .filter((name) => /^telegram(?:-[^/]+)?-allowFrom\.json$/.test(name))
+      .map((name) => path.join(credentialsDir, name));
   } catch {}
-}
-process.stdout.write(connected ? '1' : '0');"#;
+  for (const credentialPath of credentialPaths) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(credentialPath, 'utf8'));
+      if (Array.isArray(parsed.allowFrom) && parsed.allowFrom.some((value) => String(value ?? '').trim().length > 0)) {
+        connected = true;
+        break;
+      }
+    } catch {}
+  }
+
+  let runtimeConfigApiCompatible = null;
+  try {
+    const runtime = await import('file:///app/dist/plugins/runtime/index.js');
+    const pluginRuntime = runtime.createPluginRuntime?.();
+    runtimeConfigApiCompatible = typeof pluginRuntime?.config?.getRuntimeConfig === 'function';
+  } catch {}
+
+  process.stdout.write(JSON.stringify({
+    connected,
+    enabled,
+    configured,
+    runtimeConfigApiCompatible
+  }));
+})().catch((error) => {
+  process.stdout.write(JSON.stringify({
+    connected: false,
+    enabled: false,
+    configured: false,
+    runtimeConfigApiCompatible: null,
+    probeError: String(error && error.message ? error.message : error)
+  }));
+});"#;
 
     let args = ["exec", container, "node", "-e", script];
-    match docker_exec_output(&args) {
-        Ok(output) => Ok(output.trim() == "1"),
+    let output = docker_exec_output(&args)?;
+    let probe: TelegramRuntimeHealthProbe = serde_json::from_str(output.trim())
+        .map_err(|e| format!("Failed to parse Telegram runtime health: {}", e))?;
+    let last_error = latest_telegram_startup_error(container).or(probe.probe_error);
+    let fix_hint = telegram_runtime_fix_hint(
+        last_error.as_deref(),
+        probe.runtime_config_api_compatible,
+    );
+
+    Ok(TelegramRuntimeHealth {
+        connected: probe.connected,
+        enabled: probe.enabled,
+        configured: probe.configured,
+        container_running: true,
+        channel_running: probe.enabled && probe.configured && last_error.is_none(),
+        runtime_config_api_compatible: probe.runtime_config_api_compatible,
+        last_error,
+        fix_hint,
+    })
+}
+
+#[tauri::command]
+pub async fn get_telegram_runtime_health() -> Result<TelegramRuntimeHealth, String> {
+    let container = if named_gateway_container_exists(OPENCLAW_CONTAINER, true) {
+        Some(OPENCLAW_CONTAINER)
+    } else if named_gateway_container_exists(LEGACY_OPENCLAW_CONTAINER, true) {
+        Some(LEGACY_OPENCLAW_CONTAINER)
+    } else {
+        None
+    };
+
+    let Some(container) = container else {
+        return Ok(TelegramRuntimeHealth {
+            connected: false,
+            enabled: false,
+            configured: false,
+            container_running: false,
+            channel_running: false,
+            runtime_config_api_compatible: None,
+            last_error: None,
+            fix_hint: Some("Start the gateway, then message your Telegram bot with /start.".to_string()),
+        });
+    };
+
+    get_telegram_runtime_health_for_container(container)
+}
+
+#[tauri::command]
+pub async fn get_telegram_connection_status() -> Result<bool, String> {
+    match get_telegram_runtime_health().await {
+        Ok(health) => Ok(health.connected),
         Err(_) => Ok(false),
     }
 }

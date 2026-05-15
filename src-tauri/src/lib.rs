@@ -263,6 +263,7 @@ pub fn run() {
             commands::get_whatsapp_login,
             commands::approve_pairing,
             commands::get_telegram_connection_status,
+            commands::get_telegram_runtime_health,
             commands::validate_telegram_token,
             commands::send_telegram_welcome_message,
             commands::restart_gateway_in_place,

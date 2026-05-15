@@ -127,6 +127,17 @@ type GatewayMutationResult = {
   wsReconnectExpected: boolean;
 };
 
+type TelegramRuntimeHealth = {
+  connected: boolean;
+  enabled: boolean;
+  configured: boolean;
+  containerRunning: boolean;
+  channelRunning: boolean;
+  runtimeConfigApiCompatible?: boolean | null;
+  lastError?: string | null;
+  fixHint?: string | null;
+};
+
 export function Channels() {
   const [initialLoading, setInitialLoading] = useState(true);
   const [telegramEnabled, setTelegramEnabled] = useState(false);
@@ -139,6 +150,7 @@ export function Channels() {
   const [telegramLinkPreview, setTelegramLinkPreview] = useState(true);
   const [telegramTokenSaved, setTelegramTokenSaved] = useState(false);
   const [telegramConnected, setTelegramConnected] = useState(false);
+  const [telegramRuntimeHealth, setTelegramRuntimeHealth] = useState<TelegramRuntimeHealth | null>(null);
   const [showAdvancedHelp, setShowAdvancedHelp] = useState(false);
   const [telegramPairingCode, setTelegramPairingCode] = useState("");
   const [telegramPairingStatus, setTelegramPairingStatus] = useState<string | null>(null);
@@ -168,7 +180,11 @@ export function Channels() {
   }
 
   async function refreshTelegramConnectedStatus() {
-    const connected = await invoke<boolean>("get_telegram_connection_status").catch(() => false);
+    const health = await invoke<TelegramRuntimeHealth>("get_telegram_runtime_health").catch(() => null);
+    if (health) {
+      setTelegramRuntimeHealth(health);
+    }
+    const connected = Boolean(health?.connected);
     setTelegramConnected(Boolean(connected));
     return Boolean(connected);
   }
@@ -517,6 +533,15 @@ export function Channels() {
     }
   }
 
+  const telegramRuntimeIssue =
+    telegramTokenSaved && !telegramConnected && telegramRuntimeHealth?.lastError
+      ? {
+          error: telegramRuntimeHealth.lastError,
+          hint: telegramRuntimeHealth.fixHint,
+          canRestartGateway: telegramRuntimeHealth.runtimeConfigApiCompatible !== false,
+        }
+      : null;
+
   if (initialLoading) {
     return (
       <div className="max-w-6xl mx-auto px-6 pb-12">
@@ -624,7 +649,9 @@ export function Channels() {
                           Awaiting authorization
                         </p>
                         <p className="text-xs text-[var(--text-secondary)]">
-                          {gatewayRunning
+                          {telegramRuntimeIssue
+                            ? "Telegram is configured, but the channel failed before it could send pairing codes."
+                            : gatewayRunning
                             ? "Message your bot on Telegram and send /start to receive a pairing code. Paste it below and click Approve."
                             : "Start the gateway, then message your bot on Telegram and send /start to receive a pairing code."}
                         </p>
@@ -633,6 +660,31 @@ export function Channels() {
                         <Loader2 className="w-4 h-4 animate-spin text-[var(--text-tertiary)] flex-shrink-0" />
                       )}
                     </div>
+                    {telegramRuntimeIssue && (
+                      <div className="rounded-md border border-red-500/20 bg-red-500/10 px-3 py-2">
+                        <p className="text-xs font-medium text-red-500 mb-1">
+                          Telegram channel failed to start
+                        </p>
+                        <p className="text-xs text-[var(--text-secondary)] break-words">
+                          {telegramRuntimeIssue.error}
+                        </p>
+                        {telegramRuntimeIssue.hint && (
+                          <p className="text-xs text-[var(--text-secondary)] mt-1">
+                            {telegramRuntimeIssue.hint}
+                          </p>
+                        )}
+                        {telegramRuntimeIssue.canRestartGateway && (
+                          <button
+                            type="button"
+                            onClick={applyTelegramConfigNow}
+                            disabled={restartingGateway}
+                            className="mt-2 px-3 py-1.5 bg-red-700 text-white rounded-md text-xs font-semibold hover:bg-red-800 disabled:opacity-50"
+                          >
+                            {restartingGateway ? "Restarting..." : "Restart gateway"}
+                          </button>
+                        )}
+                      </div>
+                    )}
                     <div className="flex gap-2">
                       <input
                         type="text"

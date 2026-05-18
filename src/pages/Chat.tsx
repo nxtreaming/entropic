@@ -1882,6 +1882,7 @@ export function Chat({
   const [savedWorkspaceImagePaths, setSavedWorkspaceImagePaths] = useState<Record<string, string>>({});
   const [toolActivityByRunId, setToolActivityByRunId] = useState<Record<string, ChatToolActivity[]>>({});
   const [activeToolRunId, setActiveToolRunId] = useState<string | null>(null);
+  const [cancelInFlight, setCancelInFlight] = useState(false);
   const [loadingWordIndex, setLoadingWordIndex] = useState(() => randomThinkingWordIndex());
   const [loadingWordChanging, setLoadingWordChanging] = useState(false);
   const [dragActive, setDragActive] = useState(false);
@@ -3598,6 +3599,51 @@ export function Chat({
       activeRunTimeoutRef.current = null;
     }
     setOutboxWakeTick((tick) => tick + 1);
+  }
+
+  async function cancelCurrentWork() {
+    if (cancelInFlight) return;
+    const sessionKey = currentSessionRef.current;
+    if (!sessionKey) return;
+
+    const runId = activeRunIdRef.current;
+    const runSessionKey =
+      activeRunSessionRef.current ||
+      (runId ? runSessionKeyRef.current[runId] || "" : "");
+    if (runId && runSessionKey === sessionKey && clientRef.current) {
+      setCancelInFlight(true);
+      setThinkingStatus("Stopping");
+      setError(null);
+      try {
+        await clientRef.current.abortChat(sessionKey, runId);
+        addDiag(`abort requested runId=${runId}`);
+      } catch (error) {
+        const message = formatUnknownUiError(error, "Failed to stop the current response.");
+        setError(message);
+        addDiag(`abort failed runId=${runId}: ${String(error)}`);
+      } finally {
+        setCancelInFlight(false);
+      }
+      return;
+    }
+
+    const queuedEntries = outboxEntriesRef.current.filter((entry) => entry.sessionKey === sessionKey);
+    if (queuedEntries.length > 0) {
+      queuedEntries.forEach((entry) => {
+        removeOutboxEntry(entry.id);
+        voiceSpeakResponseBySendIdRef.current.delete(entry.id);
+        delete workspaceOfficeOpenBySendIdRef.current[entry.id];
+      });
+      setIsLoading(false);
+      setThinkingStatus(null);
+      setActiveWorkSessionKey(null);
+      setError(null);
+      appendAssistantNotice("Queued message cancelled.", sessionKey);
+      addDiag(`cancelled ${queuedEntries.length} queued send(s) session=${sessionKey}`);
+      return;
+    }
+
+    setError("Stopping `/run` commands is not available yet.");
   }
 
   function recoverInterruptedActiveRun(reason: string) {
@@ -7952,6 +7998,13 @@ export function Chat({
         activeRunSessionRef.current === currentSession ||
         currentSessionHasQueuedWork)
   );
+  const activeRunBelongsToCurrentSession = Boolean(
+    currentSession &&
+      activeRunIdRef.current &&
+      (activeRunSessionRef.current === currentSession ||
+        runSessionKeyRef.current[activeRunIdRef.current] === currentSession)
+  );
+  const canCancelCurrentWork = Boolean(currentSessionIsWorking && (activeRunBelongsToCurrentSession || currentSessionHasQueuedWork));
   const otherSessionIsWorking = Boolean(
     isLoading &&
       currentSession &&
@@ -7994,13 +8047,27 @@ export function Chat({
                 {chatAgentName}
               </button>
             </div>
-            <span
-              key={loadingLabel}
-              className="entropic-thinking-shimmer inline-block text-sm font-normal"
-              data-changing={loadingWordChanging ? "true" : "false"}
-            >
-              {loadingLabel}
-            </span>
+            <div className="flex min-w-0 items-center gap-2">
+              <span
+                key={loadingLabel}
+                className="entropic-thinking-shimmer inline-block text-sm font-normal"
+                data-changing={loadingWordChanging ? "true" : "false"}
+              >
+                {loadingLabel}
+              </span>
+              {canCancelCurrentWork ? (
+                <button
+                  type="button"
+                  onClick={() => void cancelCurrentWork()}
+                  disabled={cancelInFlight}
+                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-red-400/50 bg-red-500/10 text-red-500 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  title={cancelInFlight ? "Stopping" : "Stop"}
+                  aria-label={cancelInFlight ? "Stopping response" : "Stop response"}
+                >
+                  {cancelInFlight ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Square className="h-3 w-3 fill-current" />}
+                </button>
+              ) : null}
+            </div>
             {activeToolActivities.length > 0 ? (
               <div className="mt-3 max-w-xl">
                 {renderToolActivityList(activeToolActivities)}
@@ -8010,7 +8077,7 @@ export function Chat({
         </div>
       </div>
     );
-  }, [activeToolRunId, chatAgentAvatarUrl, chatAgentName, currentSessionIsWorking, loadingWordChanging, loadingWordIndex, messages, openAgentProfileSettings, thinkingStatus, toolActivityByRunId]);
+  }, [activeToolRunId, canCancelCurrentWork, cancelInFlight, chatAgentAvatarUrl, chatAgentName, currentSessionIsWorking, loadingWordChanging, loadingWordIndex, messages, openAgentProfileSettings, thinkingStatus, toolActivityByRunId]);
 
   const activeDraft = currentSession
     ? activeComposerMode === "shell"
@@ -8328,7 +8395,18 @@ export function Chat({
               className="form-input chat-composer-input flex-1 resize-none !border-[var(--composer-border)] focus:!border-[var(--purple-accent)]"
               style={{ overflow: 'hidden' }}
             />
-            {activeComposerMode === "chat" ? (
+            {canCancelCurrentWork ? (
+              <button
+                type="button"
+                onClick={() => void cancelCurrentWork()}
+                disabled={cancelInFlight}
+                className="chat-composer-icon-button inline-flex shrink-0 items-center justify-center border border-red-400/60 bg-red-500/15 text-red-500 shadow-sm transition-all duration-200 ease-out hover:bg-red-500/25 active:scale-95 disabled:cursor-not-allowed disabled:opacity-60"
+                title={cancelInFlight ? "Stopping" : "Stop"}
+                aria-label={cancelInFlight ? "Stopping response" : "Stop response"}
+              >
+                {cancelInFlight ? <Loader2 className="h-[18px] w-[18px] animate-spin" /> : <Square className="h-[17px] w-[17px] fill-current" />}
+              </button>
+            ) : activeComposerMode === "chat" ? (
               <>
                 {chatVoiceCaptureActive ? (
                   <button

@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-shell";
-import { Cpu, Image, Loader2, Shield, User } from "lucide-react";
+import { AudioLines, Cpu, Image, Loader2, Shield, Speech, User } from "lucide-react";
 import { Layout, Page } from "../components/Layout";
 import {
   SandboxStartupOverlay,
@@ -394,8 +394,8 @@ function SettingsLoadingShell({
           <SettingsShellRow label="Primary Model" value={selectedModel} icon={Cpu} />
           <SettingsShellRow label="Coding Model" value={codeModel} icon={Cpu} />
           <SettingsShellRow label="Image Generation Model" value={imageGenerationModel} icon={Image} />
-          <SettingsShellRow label="Text to Speech Model" value={textToSpeechModel} icon={Image} />
-          <SettingsShellRow label="Audio Understanding Model" value={audioUnderstandingModel} icon={Image} />
+          <SettingsShellRow label="Text to Speech Model" value={textToSpeechModel} icon={Speech} />
+          <SettingsShellRow label="Audio Understanding Model" value={audioUnderstandingModel} icon={AudioLines} />
         </SettingsShellGroup>
 
         <SettingsShellGroup title="System">

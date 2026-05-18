@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { Store } from "@tauri-apps/plugin-store";
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Key, Shield, Sparkles, Cpu, Image, ChevronRight, User, Palette, ChevronDown, ScrollText, LogIn, LogOut, Loader2, Trash2, AlertTriangle, Copy, Download, Sun, Moon, Monitor, RotateCcw, Volume2 } from "lucide-react";
+import { Key, Shield, Sparkles, Cpu, Image, AudioLines, Speech, ChevronRight, User, Palette, ChevronDown, ScrollText, LogIn, LogOut, Loader2, Trash2, AlertTriangle, Copy, Download, Sun, Moon, Monitor, RotateCcw, Volume2 } from "lucide-react";
 import clsx from "clsx";
 import {
   isRenderableAvatarDataUrl,
@@ -1874,7 +1874,7 @@ export function Settings({
                   />
                 </div>
               </SettingsRow>
-              <SettingsRow label="Text to Speech Model" icon={Image} wideControl>
+              <SettingsRow label="Text to Speech Model" icon={Speech} wideControl>
                 <div className="settings-row-dropdown w-full">
                   <ModelSelector
                     wide
@@ -1884,7 +1884,7 @@ export function Settings({
                   />
                 </div>
               </SettingsRow>
-              <SettingsRow label="Audio Understanding Model" icon={Image} wideControl>
+              <SettingsRow label="Audio Understanding Model" icon={AudioLines} wideControl>
                 <div className="settings-row-dropdown w-full">
                   <ModelSelector
                     wide
@@ -1922,7 +1922,7 @@ export function Settings({
             </div>
           )}
           {useLocalKeys && !authMetaLoading && localTextToSpeechProviders.length > 0 && (
-            <SettingsRow label="Text to Speech Model" icon={Image} wideControl>
+            <SettingsRow label="Text to Speech Model" icon={Speech} wideControl>
               <div className="settings-row-dropdown w-full">
                 <ModelSelector
                   wide
@@ -1940,7 +1940,7 @@ export function Settings({
             </div>
           )}
           {useLocalKeys && !authMetaLoading && localAudioUnderstandingProviders.length > 0 && (
-            <SettingsRow label="Audio Understanding Model" icon={Image} wideControl>
+            <SettingsRow label="Audio Understanding Model" icon={AudioLines} wideControl>
               <div className="settings-row-dropdown w-full">
                 <ModelSelector
                   wide

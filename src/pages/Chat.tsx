@@ -1748,13 +1748,11 @@ function parseGmailIntent(raw: string): boolean {
 
   const mentionsGmail = /\bgmail\b/.test(text);
   const mentionsInbox = /\binbox\b/.test(text);
-  const mentionsComposioGmail =
-    /\bcomposio\b/.test(text) && /\b(?:gmail|email|emails|mail|inbox)\b/.test(text);
   const mentionsGenericMail =
     /\b(?:email|emails|mail|messages?)\b/.test(text) &&
     /\b(?:check|search|read|summari[sz]e|triage|send|draft|reply|inbox)\b/.test(text);
 
-  return mentionsGmail || mentionsInbox || mentionsComposioGmail || mentionsGenericMail;
+  return mentionsGmail || mentionsInbox || mentionsGenericMail;
 }
 
 function parseOutlookIntent(raw: string): boolean {
@@ -1763,6 +1761,24 @@ function parseOutlookIntent(raw: string): boolean {
   return (
     /\b(?:outlook|microsoft\s+mail|office\s*365\s+mail)\b/.test(text) ||
     (/\bcomposio\b/.test(text) && /\b(?:outlook|microsoft|office\s*365)\b/.test(text))
+  );
+}
+
+function hasExplicitGmailIntent(raw: string): boolean {
+  const text = raw.trim().toLowerCase();
+  return /\bgmail\b/.test(text) || (/\bgoogle\b/.test(text) && /\b(?:email|mail|inbox)\b/.test(text));
+}
+
+function hasExplicitOutlookIntent(raw: string): boolean {
+  return parseOutlookIntent(raw);
+}
+
+function parseGenericEmailIntent(raw: string): boolean {
+  const text = raw.trim().toLowerCase();
+  if (!text) return false;
+  return (
+    /\b(?:email|emails|mail|message|messages|inbox)\b/.test(text) &&
+    /\b(?:check|search|read|summari[sz]e|triage|send|draft|reply|forward|inbox)\b/.test(text)
   );
 }
 
@@ -5880,11 +5896,43 @@ export function Chat({
         ? extractWorkspaceOfficeFileName(messageContent)
         : null;
 
+    const explicitOutlookIntent = hasExplicitOutlookIntent(messageContent);
+    const explicitGmailIntent = hasExplicitGmailIntent(messageContent);
+    let genericEmailProvider: "gmail" | "outlook" | null = null;
+    if (
+      !xIntent &&
+      !workspaceOfficeIntent &&
+      shouldCheckXIntent &&
+      !explicitOutlookIntent &&
+      !explicitGmailIntent &&
+      parseGenericEmailIntent(messageContent)
+    ) {
+      const [gmailConnected, outlookConnected] = await Promise.all([
+        isIntegrationReady("google_email").catch(() => false),
+        isIntegrationReady("outlook").catch(() => false),
+      ]);
+
+      if (gmailConnected && outlookConnected && sendSession) {
+        addDiag("generic email intent detected with Gmail and Outlook connected; asking for provider");
+        appendAssistantNotice(
+          "I can use Gmail or Outlook for that. Which account should I use?",
+          sendSession
+        );
+        return;
+      }
+
+      if (outlookConnected) {
+        genericEmailProvider = "outlook";
+      } else if (gmailConnected) {
+        genericEmailProvider = "gmail";
+      }
+    }
+
     const outlookIntent =
       !xIntent &&
       !workspaceOfficeIntent &&
       shouldCheckXIntent &&
-      parseOutlookIntent(messageContent);
+      (explicitOutlookIntent || genericEmailProvider === "outlook");
     if (outlookIntent && sendSession) {
       try {
         const connectedNow = await isIntegrationReady("outlook");
@@ -5903,6 +5951,7 @@ export function Chat({
 
       outboundMessageContent = [
         "Use the connected Outlook integration for this request.",
+        "Use only Outlook tools for this request. Do not call Gmail tools, including `gmail_send`, `gmail_draft`, `gmail_search`, or `gmail_get`.",
         "Available Outlook tools: `outlook_messages_list` for inbox/message lists, `outlook_message_get` for reading a specific message, `outlook_message_send` for sending mail, and `outlook_mail_folders_list` for folders.",
         "For calendar requests, use `outlook_calendars_list`, `outlook_events_list`, and `outlook_event_create`.",
         "Do not say Outlook or Composio is unavailable unless an Outlook tool call actually fails.",
@@ -5917,7 +5966,7 @@ export function Chat({
       !workspaceOfficeIntent &&
       !outlookIntent &&
       shouldCheckXIntent &&
-      parseGmailIntent(messageContent);
+      (explicitGmailIntent || genericEmailProvider === "gmail" || parseGmailIntent(messageContent));
     if (gmailIntent && sendSession) {
       const gmailQuickActionCandidate = getQuickActionById("inbox_cleanup");
       const gmailQuickAction =
@@ -5960,6 +6009,7 @@ export function Chat({
 
       outboundMessageContent = [
         "Use the connected Gmail integration for this request.",
+        "Use only Gmail tools for this request. Do not call Outlook tools, including `outlook_message_send`, `outlook_messages_list`, `outlook_message_get`, or `outlook_mail_folders_list`.",
         "Available Gmail tools: `gmail_search` for inbox/search, `gmail_get` for reading a specific message, `gmail_send` for sending, and `gmail_draft` for drafts.",
         "Do not say Gmail or Composio is unavailable unless a Gmail tool call actually fails.",
         "For inbox/list/summarize requests, start with `gmail_search` using query `in:inbox` and maxResults 10.",

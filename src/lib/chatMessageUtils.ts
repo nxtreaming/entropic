@@ -595,7 +595,8 @@ function extractInternalRoutingDisplayContent(raw: string): string | null {
   const isKnownRoutingPrompt =
     /^\s*Use the local Entropic workspace Office workflow for this request\./i.test(text) ||
     /^\s*Use the connected X integration for this request\./i.test(text) ||
-    /^\s*Use the connected Gmail integration for this request\./i.test(text);
+    /^\s*Use the connected Gmail integration for this request\./i.test(text) ||
+    /^\s*Use the connected Outlook integration for this request\./i.test(text);
   if (!isKnownRoutingPrompt) {
     return null;
   }

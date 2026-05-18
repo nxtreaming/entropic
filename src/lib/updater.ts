@@ -1,4 +1,5 @@
 import { getVersion } from "@tauri-apps/api/app";
+import { invoke } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
 import { updaterEnabled } from "./buildProfile";
@@ -77,6 +78,19 @@ function writeUpdaterStatus(status: UpdaterStatus): UpdaterStatus {
   }
   window.dispatchEvent(new CustomEvent<UpdaterStatus>(UPDATER_STATUS_EVENT, { detail: status }));
   return status;
+}
+
+async function stopGatewayBeforeRelaunch(targetVersion: string, source: UpdaterCheckSource) {
+  try {
+    clientLog("app.updater.gateway_stop_before_relaunch", { targetVersion, source });
+    await invoke("stop_gateway");
+  } catch (error) {
+    clientLog("app.updater.gateway_stop_before_relaunch_failed", {
+      targetVersion,
+      source,
+      error: compactError(error),
+    });
+  }
 }
 
 export function readUpdaterStatus(): UpdaterStatus | null {
@@ -178,6 +192,7 @@ export async function checkForAppUpdates(
         source,
       });
       clientLog("app.updater.relaunch", { targetVersion, source });
+      await stopGatewayBeforeRelaunch(targetVersion, source);
       await relaunch();
 
       return {

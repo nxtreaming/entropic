@@ -1850,6 +1850,7 @@ export function Chat({
   const [shellDraftsBySession, setShellDraftsBySession] = useState<Record<string, string>>({});
   const [imageDraftsBySession, setImageDraftsBySession] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(false);
+  const [activeWorkSessionKey, setActiveWorkSessionKey] = useState<string | null>(null);
   const [thinkingStatus, setThinkingStatus] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [showConnectingScreen, setShowConnectingScreen] = useState(false);
@@ -1952,6 +1953,7 @@ export function Chat({
   const activeRunTimeoutRef = useRef<number | null>(null);
   const runSessionKeyRef = useRef<Record<string, string>>({});
   const runHistoryRecoveryRef = useRef<Record<string, boolean>>({});
+  const detachedRunSessionRef = useRef<Record<string, string>>({});
   const gatewaySessionKeysRef = useRef<Set<string>>(new Set());
   const visibleMessagesSessionRef = useRef<string | null>(null);
   const builderSessionsRef = useRef<Set<string>>(new Set());
@@ -3589,11 +3591,13 @@ export function Chat({
   function clearActiveRunTracking() {
     activeRunIdRef.current = null;
     activeRunSessionRef.current = null;
+    setActiveWorkSessionKey(null);
     setActiveToolRunId(null);
     if (activeRunTimeoutRef.current) {
       window.clearTimeout(activeRunTimeoutRef.current);
       activeRunTimeoutRef.current = null;
     }
+    setOutboxWakeTick((tick) => tick + 1);
   }
 
   function recoverInterruptedActiveRun(reason: string) {
@@ -3606,17 +3610,20 @@ export function Chat({
     if (!runId || !sessionKey) {
       setIsLoading(false);
       setThinkingStatus(null);
+      setActiveWorkSessionKey(null);
       clearActiveRunTracking();
       return;
     }
 
     addDiag(`${reason} runId=${runId}; waiting for reconnect/history recovery`);
     setIsLoading(true);
+    setActiveWorkSessionKey(sessionKey);
     setThinkingStatus("Finalizing response");
     setError(null);
     clearActiveRunTracking();
     void recoverFinalRunFromHistory(runId, sessionKey).finally(() => {
       setIsLoading(false);
+      setActiveWorkSessionKey(null);
     });
   }
 
@@ -3646,12 +3653,90 @@ export function Chat({
     clearActiveRunTracking();
     activeRunIdRef.current = runId;
     activeRunSessionRef.current = sessionKey;
+    setActiveWorkSessionKey(sessionKey);
     setActiveToolRunId(runId);
     streamedAssistantRunIdsRef.current.delete(runId);
     setToolActivityByRunId((prev) => ({ ...prev, [runId]: [] }));
     runSessionKeyRef.current[runId] = sessionKey;
     lastEventByRunIdRef.current[runId] = Date.now();
     refreshActiveRunTimeout(runId);
+  }
+
+  function createDetachedRunSession(runId: string, label = "Scheduled run"): string {
+    const existing = detachedRunSessionRef.current[runId] || runSessionKeyRef.current[runId];
+    if (existing) return existing;
+
+    const sessionKey = `scheduled-${runId || crypto.randomUUID()}`;
+    detachedRunSessionRef.current[runId] = sessionKey;
+    runSessionKeyRef.current[runId] = sessionKey;
+    sessionMessagesRef.current[sessionKey] = sessionMessagesRef.current[sessionKey] || [];
+    setSessions((prev) => {
+      if (prev.some((session) => session.key === sessionKey)) {
+        return prev;
+      }
+      return applySessionTitles(
+        normalizeSessionsList([{ key: sessionKey, label, updatedAt: Date.now() }, ...prev]),
+      );
+    });
+    schedulePersist();
+    return sessionKey;
+  }
+
+  function upsertAssistantMessageForSession(
+    sessionKey: string,
+    runId: string,
+    normalized: ReturnType<typeof normalizeGatewayMessage>,
+  ) {
+    if (!normalized) return;
+    const text = normalized.content ?? "";
+    const hasRenderableAssistantPayload = Boolean(
+      normalized.assistantPayload &&
+        (normalized.assistantPayload.events.length > 0 || normalized.assistantPayload.errors.length > 0)
+    );
+    if (!text && !hasRenderableAssistantPayload) return;
+
+    const nextMessage: Message = {
+      id: runId || crypto.randomUUID(),
+      role: "assistant",
+      content: text,
+      kind: normalized.kind,
+      toolName: normalized.toolName,
+      assistantPayload: normalized.assistantPayload,
+      sentAt: normalized.sentAt ?? Date.now(),
+    };
+    const existing = sessionMessagesRef.current[sessionKey] || [];
+    const existingIdx = existing.findIndex((message) => message.id === nextMessage.id && message.role === "assistant");
+    const nextMessages =
+      existingIdx >= 0
+        ? existing.map((message, index) =>
+            index === existingIdx
+              ? {
+                  ...message,
+                  content: text,
+                  kind: normalized.kind ?? message.kind,
+                  toolName: normalized.toolName ?? message.toolName,
+                  assistantPayload: normalized.assistantPayload ?? message.assistantPayload,
+                  sentAt: message.sentAt ?? normalized.sentAt ?? Date.now(),
+                }
+              : message,
+          )
+        : [...existing, nextMessage];
+    sessionMessagesRef.current[sessionKey] = nextMessages;
+    setSessions((prev) =>
+      applySessionTitles(
+        normalizeSessionsList(
+          prev.some((session) => session.key === sessionKey)
+            ? prev.map((session) =>
+                session.key === sessionKey ? { ...session, updatedAt: Date.now() } : session,
+              )
+            : [{ key: sessionKey, label: "Scheduled run", updatedAt: Date.now() }, ...prev],
+        ),
+      ),
+    );
+    if (currentSessionRef.current === sessionKey) {
+      setMessages(nextMessages);
+    }
+    schedulePersist();
   }
 
   // Emit session list to parent (for sidebar rendering)
@@ -3983,12 +4068,14 @@ export function Chat({
       : null;
     if (currentQueued) {
       setIsLoading(true);
+      setActiveWorkSessionKey(currentSession);
       setThinkingStatus("Waiting for reconnect");
       return;
     }
     if (thinkingStatus === "Waiting for reconnect") {
       setThinkingStatus(null);
       setIsLoading(false);
+      setActiveWorkSessionKey(null);
     }
   }, [currentSession, outboxEntries, thinkingStatus]);
 
@@ -4320,6 +4407,7 @@ export function Chat({
 
     runHistoryRecoveryRef.current[runId] = true;
     setIsLoading(true);
+    setActiveWorkSessionKey(sessionKey);
     try {
       for (let attempt = 0; attempt < FINAL_RESPONSE_RECOVERY_MAX_ATTEMPTS; attempt += 1) {
         const client = clientRef.current;
@@ -4452,6 +4540,7 @@ export function Chat({
           setThinkingStatus(null);
           setError(null);
           setIsLoading(false);
+          setActiveWorkSessionKey(null);
           if (isBillingIssueMessage(text)) {
             setError(BILLING_RECOVERY_MESSAGE);
             setShowOutOfCreditsModal(true);
@@ -4475,12 +4564,14 @@ export function Chat({
             }),
           );
           setIsLoading(false);
+          setActiveWorkSessionKey(null);
           addDiag(`final recovery failed runId=${runId}: ${String(err)}`);
           return;
         }
       }
     } finally {
       setIsLoading(false);
+      setActiveWorkSessionKey(null);
       delete runHistoryRecoveryRef.current[runId];
     }
   }
@@ -4501,6 +4592,11 @@ export function Chat({
     }
     const eventSessionKey =
       typeof event?.sessionKey === "string" ? event.sessionKey.trim() : "";
+    const hasMissingSessionKey = !eventSessionKey || eventSessionKey === "unknown";
+    const isActiveRun = Boolean(eventRunId && activeRunIdRef.current === eventRunId);
+    if (eventRunId && hasMissingSessionKey && !isActiveRun && !runSessionKeyRef.current[eventRunId]) {
+      createDetachedRunSession(eventRunId);
+    }
     if (eventRunId && eventSessionKey && eventSessionKey !== "unknown") {
       runSessionKeyRef.current[eventRunId] = eventSessionKey;
     }
@@ -4510,7 +4606,6 @@ export function Chat({
         : eventRunId
           ? runSessionKeyRef.current[eventRunId] || ""
           : "";
-    const isActiveRun = Boolean(eventRunId && activeRunIdRef.current === eventRunId);
     if (isActiveRun) {
       lastEventByRunIdRef.current[eventRunId!] = Date.now();
       refreshActiveRunTimeout(eventRunId!);
@@ -4571,8 +4666,24 @@ export function Chat({
     if (
       !isActiveRun &&
       currentSessionRef.current &&
-      (!knownSessionKey || knownSessionKey !== currentSessionRef.current)
+      knownSessionKey &&
+      knownSessionKey !== currentSessionRef.current
     ) {
+      if (event.state === "delta" || event.state === "final") {
+        const normalized = event.message
+          ? normalizeGatewayMessage(event.message as GatewayMessage, eventRunId || "evt")
+          : null;
+        upsertAssistantMessageForSession(knownSessionKey, eventRunId || "evt", normalized);
+      }
+      return;
+    }
+    if (
+      !isActiveRun &&
+      currentSessionRef.current &&
+      !knownSessionKey &&
+      (event.state === "delta" || event.state === "final")
+    ) {
+      addDiag(`ignored chat event without session key runId=${eventRunId || "unknown"}`);
       return;
     }
     if (event.state === "delta" || event.state === "final") {
@@ -4756,6 +4867,7 @@ export function Chat({
         setShowOutOfCreditsModal(true);
       }
       setIsLoading(false);
+      setActiveWorkSessionKey(null);
       if (eventRunId) {
         finalizeRunningToolActivities(eventRunId, "error");
       }
@@ -4790,6 +4902,7 @@ export function Chat({
       }
     } else if (event.state === "aborted") {
       setIsLoading(false);
+      setActiveWorkSessionKey(null);
       if (eventRunId) {
         finalizeRunningToolActivities(eventRunId, "error");
       }
@@ -4957,9 +5070,22 @@ export function Chat({
     currentSessionRef.current = sessionId;
     setCurrentSession(sessionId);
     setError(null);
-    setIsLoading(false);
-    setThinkingStatus(null);
-    clearActiveRunTracking();
+    const activeRunSession = activeRunSessionRef.current;
+    if (activeRunIdRef.current && activeRunSession) {
+      setIsLoading(true);
+      setActiveWorkSessionKey(activeRunSession);
+      if (activeRunSession !== sessionId) {
+        setThinkingStatus(null);
+      }
+    } else if (outboxEntriesRef.current.some((entry) => entry.sessionKey === sessionId)) {
+      setIsLoading(true);
+      setActiveWorkSessionKey(sessionId);
+      setThinkingStatus("Waiting for reconnect");
+    } else {
+      setIsLoading(false);
+      setActiveWorkSessionKey(null);
+      setThinkingStatus(null);
+    }
 
     // Optimistically swap to local cache immediately so the selected chat appears right away.
     const cachedMsgs = (sessionMessagesRef.current[sessionId] || []).map(normalizeCachedMessage);
@@ -5449,6 +5575,7 @@ export function Chat({
     }
     outboxReplayInFlightRef.current = true;
     setIsLoading(true);
+    setActiveWorkSessionKey(entry.sessionKey);
     setThinkingStatus("Waiting for reconnect");
     setError(null);
 
@@ -5482,6 +5609,7 @@ export function Chat({
         voiceSpeakResponseBySendIdRef.current.delete(entry.id);
         setError(errorMessage);
         setIsLoading(false);
+        setActiveWorkSessionKey(null);
         setThinkingStatus(null);
       }
       addDiag(`queued send failed: ${errorMessage}`);
@@ -5526,7 +5654,12 @@ export function Chat({
     const userMessageContent =
       composerMode === "shell" ? rawMessageContent : messageContent;
     const failedDraftRestore = content ? null : currentDraft;
-    if (!sendSession || isLoading || (!rawMessageContent && pendingAttachments.length === 0)) return;
+    const sendSessionIsBusy =
+      isLoading &&
+      (activeWorkSessionKey === sendSession ||
+        activeRunSessionRef.current === sendSession ||
+        outboxEntriesRef.current.some((entry) => entry.sessionKey === sendSession));
+    if (!sendSession || sendSessionIsBusy || (!rawMessageContent && pendingAttachments.length === 0)) return;
     const attachmentsPayload = pendingAttachments.map((attachment) => ({
       fileName: attachment.fileName,
       mimeType: attachment.mimeType,
@@ -5589,6 +5722,7 @@ export function Chat({
       }
 
       setIsLoading(true);
+      setActiveWorkSessionKey(sendSession);
       setThinkingStatus("Running command");
       setError(null);
 
@@ -5643,6 +5777,7 @@ export function Chat({
         );
       } finally {
         setIsLoading(false);
+        setActiveWorkSessionKey(null);
         setThinkingStatus(null);
       }
       return;
@@ -5701,6 +5836,7 @@ export function Chat({
       }
 
       setIsLoading(true);
+      setActiveWorkSessionKey(sendSession);
       setThinkingStatus("Generating image");
       setError(null);
 
@@ -5736,6 +5872,7 @@ export function Chat({
       } finally {
         clearPendingAttachments();
         setIsLoading(false);
+        setActiveWorkSessionKey(null);
         setThinkingStatus(null);
       }
       return;
@@ -5798,6 +5935,10 @@ export function Chat({
       }
     }
     setShowWelcome(false);
+    setIsLoading(true);
+    setActiveWorkSessionKey(sendSession);
+    setThinkingStatus("Checking request");
+    setError(null);
 
     const shouldCheckTaskBoardIntent =
       !hasAttachments &&
@@ -5811,9 +5952,13 @@ export function Chat({
       ? parseTaskBoardChatIntent(messageContent)
       : null;
     if (taskBoardIntent && sendSession) {
+      setThinkingStatus("Updating task board");
       const handled = await handleTaskBoardChatIntent(taskBoardIntent, sendSession);
       if (handled) {
         clearPendingAttachments();
+        setIsLoading(false);
+        setActiveWorkSessionKey(null);
+        setThinkingStatus(null);
         return;
       }
     }
@@ -5822,6 +5967,9 @@ export function Chat({
         "I couldn't safely parse that board command, so I didn't change tasks. Try: `add task board: <task>` or `add a task on my board to <task>`.",
         sendSession
       );
+      setIsLoading(false);
+      setActiveWorkSessionKey(null);
+      setThinkingStatus(null);
       return;
     }
 
@@ -5855,6 +6003,9 @@ export function Chat({
               `I can do that with ${integrationRequirementLabel(requirement)}, but it is not connected yet. Complete setup below and I will continue.`,
               sendSession
             );
+            setIsLoading(false);
+            setActiveWorkSessionKey(null);
+            setThinkingStatus(null);
             return;
           }
         } catch {
@@ -5866,6 +6017,9 @@ export function Chat({
           });
           setQuickSuggestionForSession(sendSession, null);
           setBuilderChecklistForSession(sendSession, null);
+          setIsLoading(false);
+          setActiveWorkSessionKey(null);
+          setThinkingStatus(null);
           return;
         }
       }
@@ -5918,6 +6072,9 @@ export function Chat({
           "I can use Gmail or Outlook for that. Which account should I use?",
           sendSession
         );
+        setIsLoading(false);
+        setActiveWorkSessionKey(null);
+        setThinkingStatus(null);
         return;
       }
 
@@ -5942,10 +6099,16 @@ export function Chat({
             "I can do that with Outlook, but it is not connected yet. Connect Outlook in Integrations, then try again.",
             sendSession
           );
+          setIsLoading(false);
+          setActiveWorkSessionKey(null);
+          setThinkingStatus(null);
           return;
         }
       } catch {
         appendAssistantNotice("Failed to check Outlook integration status.", sendSession);
+        setIsLoading(false);
+        setActiveWorkSessionKey(null);
+        setThinkingStatus(null);
         return;
       }
 
@@ -5992,6 +6155,9 @@ export function Chat({
               `I can do that with ${integrationRequirementLabel(requirement)}, but it is not connected yet. Complete setup below and I will continue.`,
               sendSession
             );
+            setIsLoading(false);
+            setActiveWorkSessionKey(null);
+            setThinkingStatus(null);
             return;
           }
         } catch {
@@ -6003,6 +6169,9 @@ export function Chat({
           });
           setQuickSuggestionForSession(sendSession, null);
           setBuilderChecklistForSession(sendSession, null);
+          setIsLoading(false);
+          setActiveWorkSessionKey(null);
+          setThinkingStatus(null);
           return;
         }
       }
@@ -6044,6 +6213,15 @@ export function Chat({
     upsertOutboxEntry(pendingSend);
     clearPendingAttachments();
 
+    if (activeRunIdRef.current && activeRunSessionRef.current !== sendSession) {
+      setThinkingStatus("Queued behind current task");
+      setError(null);
+      addDiag(
+        `send queued behind active run session=${sendSession} activeSession=${activeRunSessionRef.current}`,
+      );
+      return;
+    }
+
     if (!liveClient || !liveClient.isConnected()) {
       if (!connectInFlightRef.current) {
         void connectToGateway();
@@ -6060,6 +6238,7 @@ export function Chat({
     outboxDispatchInFlightRef.current.add(pendingSend.id);
     await refreshTrialCredits();
     setIsLoading(true);
+    setActiveWorkSessionKey(sendSession);
     setThinkingStatus("Thinking");
     setError(null);
     try {
@@ -6093,6 +6272,7 @@ export function Chat({
           setError(errorMessage);
         }
         setIsLoading(false);
+        setActiveWorkSessionKey(null);
         setThinkingStatus(null);
       }
       await refreshTrialCredits();
@@ -6397,7 +6577,7 @@ export function Chat({
             message: `${CRON_GUARD_BLOCK}${quick.action.message}`,
             deliver: false,
           },
-          sessionTarget: "main",
+          sessionTarget: "isolated",
           wakeMode: "next-heartbeat",
           enabled: true,
         });
@@ -6503,7 +6683,7 @@ export function Chat({
                 </button>
                 <button
                   onClick={startBuilderFromChecklist}
-                  disabled={isLoading}
+                  disabled={currentSessionIsWorking}
                   className="btn-primary !text-xs !py-1.5"
                 >
                   Start
@@ -6672,7 +6852,7 @@ export function Chat({
             <div className="flex flex-wrap gap-2 mt-3">
               <button
                 onClick={runQuickSuggestionNow}
-                disabled={isLoading || quick.creatingTask}
+                disabled={currentSessionIsWorking || quick.creatingTask}
                 className="btn-primary !text-xs !py-1.5"
               >
                 Run once in chat
@@ -7762,12 +7942,30 @@ export function Chat({
     );
   }), [chatAgentAvatarUrl, chatAgentName, copiedMessageId, messages, openAgentProfileSettings, toolActivityByRunId]);
 
+  const currentSessionHasQueuedWork = Boolean(
+    currentSession && outboxEntries.some((entry) => entry.sessionKey === currentSession)
+  );
+  const currentSessionIsWorking = Boolean(
+    isLoading &&
+      currentSession &&
+      (activeWorkSessionKey === currentSession ||
+        activeRunSessionRef.current === currentSession ||
+        currentSessionHasQueuedWork)
+  );
+  const otherSessionIsWorking = Boolean(
+    isLoading &&
+      currentSession &&
+      activeWorkSessionKey &&
+      activeWorkSessionKey !== currentSession
+  );
+
   const loadingIndicator = useMemo(() => {
-    if (!isLoading) return null;
+    if (!currentSessionIsWorking) return null;
     if (activeToolRunId && streamedAssistantRunIdsRef.current.has(activeToolRunId)) {
       return null;
     }
     const loadingWord = THINKING_WORDS[loadingWordIndex % THINKING_WORDS.length] ?? "Thinking";
+    const loadingLabel = thinkingStatus || loadingWord;
     const activeToolActivities = activeToolRunId ? toolActivityByRunId[activeToolRunId] ?? [] : [];
     return (
       <div className="flex w-full min-w-0 justify-start py-2">
@@ -7797,11 +7995,11 @@ export function Chat({
               </button>
             </div>
             <span
-              key={loadingWord}
+              key={loadingLabel}
               className="entropic-thinking-shimmer inline-block text-sm font-normal"
               data-changing={loadingWordChanging ? "true" : "false"}
             >
-              {loadingWord}
+              {loadingLabel}
             </span>
             {activeToolActivities.length > 0 ? (
               <div className="mt-3 max-w-xl">
@@ -7812,7 +8010,7 @@ export function Chat({
         </div>
       </div>
     );
-  }, [activeToolRunId, chatAgentAvatarUrl, chatAgentName, isLoading, loadingWordChanging, loadingWordIndex, messages, openAgentProfileSettings, toolActivityByRunId]);
+  }, [activeToolRunId, chatAgentAvatarUrl, chatAgentName, currentSessionIsWorking, loadingWordChanging, loadingWordIndex, messages, openAgentProfileSettings, thinkingStatus, toolActivityByRunId]);
 
   const activeDraft = currentSession
     ? activeComposerMode === "shell"
@@ -7828,13 +8026,13 @@ export function Chat({
       pendingAttachments.length === 0 &&
       !liveSpeech.isListening &&
       !streamingSpeech.isRecording) ||
-    isLoading ||
+    currentSessionIsWorking ||
     audioRecorder.isRecording ||
     audioRecorder.isFinalizing ||
     (streamingSpeech.isProcessing && !streamingSpeech.isRecording) ||
     isTranscribing ||
     isGeneratingAudio;
-  const chatMicDisabled = isLoading || isTranscribing || isGeneratingAudio;
+  const chatMicDisabled = currentSessionIsWorking || isTranscribing || isGeneratingAudio;
 
   useEffect(() => {
     if (!textareaRef.current) return;
@@ -7906,6 +8104,12 @@ export function Chat({
               Start Gateway
             </button>
           )}
+        </div>
+      )}
+
+      {otherSessionIsWorking && (
+        <div className="p-2 text-center text-sm bg-[var(--purple-accent)]/10 text-[var(--text-secondary)]">
+          Another chat is still working. You can keep typing here; new messages will queue until it finishes.
         </div>
       )}
 
@@ -8058,7 +8262,7 @@ export function Chat({
                 <button
                   type="button"
                   onClick={() => void transcribePendingAudio()}
-                  disabled={isLoading || isTranscribing}
+                  disabled={currentSessionIsWorking || isTranscribing}
                   className="inline-flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-secondary)] px-2 py-1 text-[11px] font-medium text-[var(--text-primary)] hover:bg-[var(--system-gray-6)] disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {isTranscribing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Music2 className="h-3 w-3" />}
@@ -8071,7 +8275,7 @@ export function Chat({
             {activeComposerMode !== "shell" ? (
               <button
                 onClick={() => fileInputRef.current?.click()}
-                disabled={isLoading}
+                disabled={currentSessionIsWorking}
                 className="btn-secondary chat-composer-icon-button !p-0"
                 title={activeComposerMode === "image" ? "Attach reference image" : "Attach file"}
                 aria-label={activeComposerMode === "image" ? "Attach reference image" : "Attach file"}

@@ -14,6 +14,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   MoreHorizontal,
+  Pencil,
   Pin,
   Trash2,
 } from "lucide-react";
@@ -113,6 +114,29 @@ export function Layout({
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showAllChatSessions, setShowAllChatSessions] = useState(false);
   const [openSessionMenuKey, setOpenSessionMenuKey] = useState<string | null>(null);
+  const [renamingSessionKey, setRenamingSessionKey] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+
+  const startRenamingSession = (session: ChatSession) => {
+    setOpenSessionMenuKey(null);
+    setRenamingSessionKey(session.key);
+    setRenameDraft(sessionTitle(session));
+  };
+
+  const finishRenamingSession = (key: string) => {
+    const nextLabel = renameDraft.trim();
+    const current = chatSessions?.find((session) => session.key === key);
+    const currentTitle = current ? sessionTitle(current).trim() : "";
+    setRenamingSessionKey(null);
+    setRenameDraft("");
+    if (!nextLabel || nextLabel === currentTitle) return;
+    onChatSessionAction?.({ type: "rename", key, label: nextLabel });
+  };
+
+  const cancelRenamingSession = () => {
+    setRenamingSessionKey(null);
+    setRenameDraft("");
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -315,30 +339,50 @@ export function Layout({
                   <div className="mt-1 ml-2 pl-2 border-l border-[var(--border-subtle)] space-y-0.5">
                     {visibleChatSessions.map((session) => (
                       <div key={session.key} className="relative flex items-center gap-1">
-                        <button
-                          onClick={() => {
-                            setOpenSessionMenuKey(null);
-                            onSelectChatSession?.(session.key);
-                          }}
-                          className={clsx(
-                            "flex-1 flex items-center gap-2 px-3 py-1 rounded-md text-[12px] transition-colors text-left min-w-0",
-                            currentChatSession === session.key
-                              ? "bg-[var(--purple-accent)] text-white font-medium shadow-sm"
-                              : "text-[var(--text-primary)] hover:bg-[var(--border-subtle)]"
-                          )}
-                        >
-                          {session.pinned ? (
-                            <Pin
-                              className={clsx(
-                                "w-3 h-3",
-                                currentChatSession === session.key
-                                  ? "text-white/85"
-                                  : "text-[var(--text-secondary)]",
-                              )}
-                            />
-                          ) : null}
-                          <span className="truncate flex-1">{sessionTitle(session)}</span>
-                        </button>
+                        {renamingSessionKey === session.key ? (
+                          <input
+                            autoFocus
+                            value={renameDraft}
+                            onChange={(e) => setRenameDraft(e.target.value)}
+                            onBlur={() => finishRenamingSession(session.key)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                finishRenamingSession(session.key);
+                              } else if (e.key === "Escape") {
+                                e.preventDefault();
+                                cancelRenamingSession();
+                              }
+                            }}
+                            className="flex-1 min-w-0 rounded-md border border-[var(--purple-accent)] bg-[var(--bg-card)] px-2 py-1 text-[12px] text-[var(--text-primary)] outline-none shadow-sm"
+                            aria-label="Rename chat"
+                          />
+                        ) : (
+                          <button
+                            onClick={() => {
+                              setOpenSessionMenuKey(null);
+                              onSelectChatSession?.(session.key);
+                            }}
+                            className={clsx(
+                              "flex-1 flex items-center gap-2 px-3 py-1 rounded-md text-[12px] transition-colors text-left min-w-0",
+                              currentChatSession === session.key
+                                ? "bg-[var(--purple-accent)] text-white font-medium shadow-sm"
+                                : "text-[var(--text-primary)] hover:bg-[var(--border-subtle)]"
+                            )}
+                          >
+                            {session.pinned ? (
+                              <Pin
+                                className={clsx(
+                                  "w-3 h-3",
+                                  currentChatSession === session.key
+                                    ? "text-white/85"
+                                    : "text-[var(--text-secondary)]",
+                                )}
+                              />
+                            ) : null}
+                            <span className="truncate flex-1">{sessionTitle(session)}</span>
+                          </button>
+                        )}
                         <button
                           data-chat-session-trigger
                           onClick={(e) => {
@@ -370,6 +414,16 @@ export function Layout({
                             >
                               <Pin className="w-3.5 h-3.5" />
                               {session.pinned ? "Unpin" : "Pin"}
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                startRenamingSession(session);
+                              }}
+                              className="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-[12px] text-left text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                              Rename
                             </button>
                             <button
                               onClick={(e) => {

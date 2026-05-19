@@ -1,5 +1,5 @@
-import type { MouseEvent as ReactMouseEvent } from "react";
-import { X } from "lucide-react";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { Check, X } from "lucide-react";
 import type {
   WindowPoint,
   WindowResizeDirection,
@@ -97,6 +97,8 @@ export function FilePreviewWindow({
   onCopyText,
   onExport,
 }: FilePreviewWindowProps) {
+  const [copyNoticeVisible, setCopyNoticeVisible] = useState(false);
+  const copyNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ext = preview.name.split(".").pop()?.toLowerCase() || "";
   const isCode = CODE_EXTENSIONS.has(ext);
   const isMd = ext === "md";
@@ -104,6 +106,30 @@ export function FilePreviewWindow({
   const iconColor = getFileColor(preview.name, false);
   const lines = preview.kind === "text" ? preview.content.split("\n") : [];
   const lineNumberWidth = String(lines.length || 1).length;
+
+  useEffect(() => {
+    setCopyNoticeVisible(false);
+  }, [preview.path]);
+
+  useEffect(() => {
+    return () => {
+      if (copyNoticeTimerRef.current) {
+        clearTimeout(copyNoticeTimerRef.current);
+      }
+    };
+  }, []);
+
+  async function handleCopyText() {
+    await onCopyText();
+    setCopyNoticeVisible(true);
+    if (copyNoticeTimerRef.current) {
+      clearTimeout(copyNoticeTimerRef.current);
+    }
+    copyNoticeTimerRef.current = setTimeout(() => {
+      setCopyNoticeVisible(false);
+      copyNoticeTimerRef.current = null;
+    }, 1800);
+  }
 
   return (
     <div
@@ -142,7 +168,7 @@ export function FilePreviewWindow({
             <button
               type="button"
               onClick={() => {
-                void onCopyText();
+                void handleCopyText();
               }}
               className="rounded-lg px-2.5 py-1 text-[11px] font-medium"
               style={{ background: "rgba(255,255,255,0.08)", color: "#d7d7d7" }}
@@ -161,6 +187,19 @@ export function FilePreviewWindow({
             Export...
           </button>
         </div>
+        {copyNoticeVisible ? (
+          <div
+            className="pointer-events-none absolute right-3 top-11 z-30 flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium shadow-lg"
+            style={{
+              background: "rgba(26, 26, 26, 0.94)",
+              color: "#f5f5f5",
+              border: "1px solid rgba(255,255,255,0.12)",
+            }}
+          >
+            <Check className="h-3.5 w-3.5 text-green-400" />
+            Copied to clipboard
+          </div>
+        ) : null}
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
           <div className="flex items-center gap-2">
             <Icon className="h-3.5 w-3.5" style={{ color: iconColor }} />

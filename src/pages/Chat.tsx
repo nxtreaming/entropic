@@ -634,8 +634,10 @@ function overlaySessionMetadata(next: ChatSession[], metadataSources: ChatSessio
   const merged = next.map((session) => {
     const meta = metaByKey.get(session.key) as (ChatSession & { pinned?: boolean }) | undefined;
     const current = session as ChatSession & { pinned?: boolean };
+    const localLabel = current.label?.trim() || meta?.label?.trim();
     return {
       ...session,
+      label: localLabel || session.label,
       pinned: current.pinned ?? meta?.pinned,
     };
   });

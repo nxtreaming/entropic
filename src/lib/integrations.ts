@@ -88,7 +88,16 @@ export interface Integration {
   backend?: "local" | "hosted";
   status?: string;
   configured?: boolean;
+  permissionProfiles?: HostedIntegrationPermissionProfile[];
 }
+
+export type HostedIntegrationPermissionProfile = {
+  id: string;
+  name: string;
+  description: string;
+  configured: boolean;
+  default?: boolean;
+};
 
 type StoredIntegration = {
   provider: LocalSecretIntegrationProvider;
@@ -148,6 +157,7 @@ type HostedIntegrationCatalogRecord = {
   status: "available" | "unconfigured";
   name: string;
   description: string;
+  permissionProfiles?: HostedIntegrationPermissionProfile[];
 };
 
 type HostedIntegrationListResponse = {
@@ -201,10 +211,11 @@ async function getHostedIntegrationStatuses(): Promise<Integration[]> {
       email: undefined,
       scopes: [],
       backend: "hosted",
-      status: provider.status,
-      configured: provider.configured,
-    });
-  }
+	      status: provider.status,
+	      configured: provider.configured,
+	      permissionProfiles: provider.permissionProfiles ?? [],
+	    });
+	  }
 
   for (const integration of data.integrations || []) {
     const existing = merged.get(integration.provider);
@@ -215,10 +226,11 @@ async function getHostedIntegrationStatuses(): Promise<Integration[]> {
       email: integration.account_label ?? undefined,
       scopes: [],
       backend: "hosted",
-      status: integration.status,
-      configured: existing?.configured ?? true,
-    });
-  }
+	      status: integration.status,
+	      configured: existing?.configured ?? true,
+	      permissionProfiles: existing?.permissionProfiles ?? [],
+	    });
+	  }
 
   return Array.from(merged.values());
 }
@@ -291,7 +303,8 @@ export async function isIntegrationConnected(provider: IntegrationProvider): Pro
 }
 
 export async function connectIntegration(
-  provider: IntegrationProvider
+  provider: IntegrationProvider,
+  options?: { permissionProfile?: string | null }
 ): Promise<{ oauthUrl?: string }> {
   if (provider === "x") {
     const result = await apiRequest<{ url: string }>("/x/oauth/start", {
@@ -314,10 +327,11 @@ export async function connectIntegration(
     try {
       result = await apiRequest<{ url: string }>("/integrations/connect", {
         method: "POST",
-        body: JSON.stringify({
-          provider,
-          redirect_uri: INTEGRATIONS_REDIRECT_URL,
-        }),
+	        body: JSON.stringify({
+	          provider,
+	          redirect_uri: INTEGRATIONS_REDIRECT_URL,
+	          permission_profile: options?.permissionProfile ?? undefined,
+	        }),
       });
     } catch (err) {
       const apiError = err instanceof ApiRequestError ? err : null;

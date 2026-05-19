@@ -44,6 +44,7 @@ import {
   usesBrowserOAuthLaunch,
   Integration,
   IntegrationProvider,
+  HostedIntegrationPermissionProfile,
 } from "../lib/integrations";
 import { ScanResultModal, type PluginScanResult } from "../components/ScanResultModal";
 import { useAuth } from "../contexts/AuthContext";
@@ -87,6 +88,7 @@ type OAuthCatalogItem = {
   connected?: boolean;
   stale?: boolean;
   email?: string;
+  permissionProfiles?: HostedIntegrationPermissionProfile[];
 };
 
 type WorkspaceSkill = {
@@ -616,6 +618,7 @@ export function Store({
   const [setupError, setSetupError] = useState<string | null>(null);
   const [setupVerifying, setSetupVerifying] = useState(false);
   const [setupUrlCopied, setSetupUrlCopied] = useState(false);
+  const [selectedPermissionProfiles, setSelectedPermissionProfiles] = useState<Record<string, string>>({});
 
   const [scanModalOpen, setScanModalOpen] = useState(false);
   const [scanPluginId, setScanPluginId] = useState<string | null>(null);
@@ -1052,7 +1055,24 @@ export function Store({
     }
   }
 
-  async function handleConnectIntegration(provider: IntegrationProvider) {
+  function getSelectedPermissionProfile(
+    provider: IntegrationProvider,
+    permissionProfiles?: HostedIntegrationPermissionProfile[]
+  ) {
+    const configuredProfiles = permissionProfiles?.filter((profile) => profile.configured) ?? [];
+    if (configuredProfiles.length === 0) {
+      return null;
+    }
+    const selected = selectedPermissionProfiles[provider];
+    return configuredProfiles.find((profile) => profile.id === selected)
+      ?? configuredProfiles.find((profile) => profile.default)
+      ?? configuredProfiles[0];
+  }
+
+  async function handleConnectIntegration(
+    provider: IntegrationProvider,
+    permissionProfiles?: HostedIntegrationPermissionProfile[]
+  ) {
     setConnecting(provider);
     setSetupProvider(provider);
     setSetupStage("authorizing");
@@ -1060,7 +1080,10 @@ export function Store({
     setSetupLaunchUrl(null);
     setSetupError(null);
     try {
-      const result = await connectIntegration(provider);
+      const permissionProfile = getSelectedPermissionProfile(provider, permissionProfiles);
+      const result = await connectIntegration(provider, {
+        permissionProfile: permissionProfile?.id ?? null,
+      });
       if (usesBrowserOAuthLaunch(provider)) {
         setSetupLaunchUrl(result.oauthUrl || null);
       }
@@ -1316,12 +1339,16 @@ export function Store({
           : null;
         return {
           ...integration,
-          configured: entry ? entry.configured ?? integration.configured : integration.configured,
-          connected: Boolean(entry && entry.connected && !entry.stale),
-          stale: entry?.stale,
-          email: entry?.email,
-        };
-      }),
+	          configured: entry ? entry.configured ?? integration.configured : integration.configured,
+	          connected: Boolean(entry && entry.connected && !entry.stale),
+	          stale: entry?.stale,
+	          email: entry?.email,
+	          permissionProfiles:
+	            entry && "permissionProfiles" in entry
+	              ? (entry as Integration & { permissionProfiles?: HostedIntegrationPermissionProfile[] }).permissionProfiles
+	              : integration.permissionProfiles,
+	        };
+	      }),
     [integrations]
   );
 
@@ -1564,13 +1591,19 @@ export function Store({
                 const Icon = integration.icon;
                 const isConnected = Boolean(integration.connected && !integration.stale);
                 const isBusy = integration.provider ? connecting === integration.provider : false;
-                const accountLabel =
-                  integration.email &&
-                  integration.email.trim().toLowerCase() !== integration.name.trim().toLowerCase()
-                    ? integration.email
-                    : null;
-                const actionLabel = !integration.provider
-                  ? "Coming Soon"
+	                const accountLabel =
+	                  integration.email &&
+	                  integration.email.trim().toLowerCase() !== integration.name.trim().toLowerCase()
+	                    ? integration.email
+	                    : null;
+	                const configuredPermissionProfiles =
+	                  integration.permissionProfiles?.filter((profile) => profile.configured) ?? [];
+	                const selectedPermissionProfile = getSelectedPermissionProfile(
+	                  integration.provider as IntegrationProvider,
+	                  integration.permissionProfiles
+	                );
+	                const actionLabel = !integration.provider
+	                  ? "Coming Soon"
                   : isBusy
                     ? "Working..."
                     : isConnected
@@ -1594,25 +1627,53 @@ export function Store({
                       </div>
                     </div>
 
-                    <div className="flex-1">
-                      <p className="text-[13px] leading-snug text-[var(--text-secondary)] line-clamp-3 min-h-[54px]">
-                        {integration.description}
-                      </p>
+	                    <div className="flex-1">
+	                      <p className="text-[13px] leading-snug text-[var(--text-secondary)] line-clamp-3 min-h-[54px]">
+	                        {integration.description}
+	                      </p>
+	                      {integration.provider && !isConnected && configuredPermissionProfiles.length > 1 && (
+	                        <label className="mt-2.5 block">
+	                          <span className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-[var(--text-tertiary)]">
+	                            Access
+	                          </span>
+	                          <select
+	                            value={selectedPermissionProfile?.id ?? ""}
+	                            onChange={(event) => {
+	                              setSelectedPermissionProfiles((current) => ({
+	                                ...current,
+	                                [integration.provider as string]: event.target.value,
+	                              }));
+	                            }}
+	                            className="w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-card)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:ring-2 focus:ring-[var(--system-blue)]/20"
+	                          >
+	                            {configuredPermissionProfiles.map((profile) => (
+	                              <option key={profile.id} value={profile.id}>
+	                                {profile.name}
+	                              </option>
+	                            ))}
+	                          </select>
+	                        </label>
+	                      )}
+	                      {integration.provider && !isConnected && selectedPermissionProfile && (
+	                        <p className="mt-1.5 text-[11px] leading-snug text-[var(--text-tertiary)]">
+	                          {selectedPermissionProfile.description}
+	                        </p>
+	                      )}
 
-                      <div className="mt-2.5 min-h-[16px] text-[11px] text-[var(--text-tertiary)] truncate">
-                        {accountLabel ?? ""}
+	                      <div className="mt-2.5 min-h-[16px] text-[11px] text-[var(--text-tertiary)] truncate">
+	                        {accountLabel ?? ""}
                       </div>
                     </div>
 
                     <button
                       onClick={() => {
                         if (!integration.provider) return;
-                        if (isConnected) {
-                          void handleDisconnectIntegration(integration.provider);
-                          return;
-                        }
-                        void handleConnectIntegration(integration.provider);
-                      }}
+	                        if (isConnected) {
+	                          void handleDisconnectIntegration(integration.provider);
+	                          return;
+	                        }
+	                        void handleConnectIntegration(integration.provider, integration.permissionProfiles);
+	                      }}
                       disabled={!integration.provider || isBusy}
                       className={clsx(
                         "mt-3 w-full rounded-lg px-3 py-2 text-[11px] font-bold uppercase tracking-widest transition-colors",
@@ -1713,7 +1774,10 @@ export function Store({
               {setupUsesBrowserLaunch && !setupLaunchUrl && (setupTimedOut || setupError) && (
                 <button
                   className="w-full py-2.5 mb-3 bg-blue-600 text-white rounded-2xl text-[13px] font-bold hover:bg-blue-700 transition-colors flex items-center justify-center gap-2"
-                  onClick={() => { void handleConnectIntegration(setupProvider); }}
+	                  onClick={() => {
+	                    const setupIntegration = allOauthCatalog.find((item) => item.provider === setupProvider);
+	                    void handleConnectIntegration(setupProvider, setupIntegration?.permissionProfiles);
+	                  }}
                   disabled={!!connecting || setupVerifying}
                 >
                   <ExternalLink className="w-3.5 h-3.5" />
@@ -2211,7 +2275,10 @@ export function Store({
               {setupUsesBrowserLaunch && !setupLaunchUrl && (setupTimedOut || setupError) && (
                 <button
                   className="w-full py-2.5 mb-3 bg-blue-600 text-white rounded-2xl text-[13px] font-bold hover:bg-blue-700 transition-colors flex items-center justify-center gap-2"
-                  onClick={() => { void handleConnectIntegration(setupProvider); }}
+	                  onClick={() => {
+	                    const setupIntegration = allOauthCatalog.find((item) => item.provider === setupProvider);
+	                    void handleConnectIntegration(setupProvider, setupIntegration?.permissionProfiles);
+	                  }}
                   disabled={!!connecting || setupVerifying}
                 >
                   <ExternalLink className="w-3.5 h-3.5" />

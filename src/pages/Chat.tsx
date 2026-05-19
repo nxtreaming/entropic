@@ -8076,18 +8076,6 @@ export function Chat({
               >
                 {loadingLabel}
               </span>
-              {canCancelCurrentWork ? (
-                <button
-                  type="button"
-                  onClick={() => void cancelCurrentWork()}
-                  disabled={cancelInFlight}
-                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-red-400/50 bg-red-500/10 text-red-500 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-                  title={cancelInFlight ? "Stopping" : "Stop"}
-                  aria-label={cancelInFlight ? "Stopping response" : "Stop response"}
-                >
-                  {cancelInFlight ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Square className="h-3 w-3 fill-current" />}
-                </button>
-              ) : null}
             </div>
             {activeToolActivities.length > 0 ? (
               <div className="mt-3 max-w-xl">
@@ -8258,34 +8246,7 @@ export function Chat({
 
       {/* Input Area */}
       <div className="flex-shrink-0 px-4 pb-3 pt-1">
-        <div className={clsx("min-w-0 space-y-2", wideLayout ? "w-full max-w-none" : "mx-auto max-w-3xl")}>
-          {pendingAttachments.length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              {pendingAttachments.map((attachment) => (
-                <div
-                  key={attachment.id}
-                  className="flex items-center gap-2 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-tertiary)] px-2 py-1.5"
-                >
-                  {renderPendingAttachmentPreview(attachment)}
-                  <div className="min-w-0">
-                    <div className="max-w-[180px] truncate text-xs text-[var(--text-secondary)]">
-                      {attachment.fileName}
-                    </div>
-                    <div className="text-[10px] uppercase tracking-wide text-[var(--text-tertiary)]">
-                      {attachmentKindLabel(attachment.mimeType)}
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => removePendingAttachment(attachment.id)}
-                    className="p-0.5 text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
-                    aria-label={`Remove ${attachment.fileName}`}
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
+        <div className="min-w-0 w-full space-y-2">
           <input
             ref={fileInputRef}
             type="file"
@@ -8297,194 +8258,223 @@ export function Chat({
               event.currentTarget.value = "";
             }}
           />
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
-              {([
-                { key: "chat", label: "Chat", icon: Bot },
-                { key: "shell", label: "Shell", icon: Terminal },
-                { key: "image", label: "Image", icon: ImageIcon },
-              ] as const).map((mode) => {
-                const Icon = mode.icon;
-                const active = activeComposerMode === mode.key;
-                return (
-                  <button
-                    key={mode.key}
-                    type="button"
-                    onClick={() => {
-                      const sessionKey = currentSession || ensureComposerSession();
-                      if (!sessionKey) return;
-                      setComposerModeForSession(sessionKey, mode.key);
-                      requestAnimationFrame(() => textareaRef.current?.focus());
-                    }}
-                    className={clsx(
-                      "inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition-colors",
-                      active
-                        ? "text-[var(--text-primary)]"
-                        : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
-                    )}
-                    aria-pressed={active}
+          <div className="rounded-[26px] border border-[var(--border-subtle)] bg-[var(--bg-card)] p-2 shadow-[0_12px_36px_rgba(15,23,42,0.12)] transition-colors">
+            {pendingAttachments.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-2 px-1 pt-1">
+                {pendingAttachments.map((attachment) => (
+                  <div
+                    key={attachment.id}
+                    className="flex min-w-0 items-center gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-tertiary)] px-2 py-1.5"
                   >
-                    <Icon className="h-3.5 w-3.5" />
-                    <span>{mode.label}</span>
-                  </button>
-                );
-              })}
-            </div>
-            {activeComposerMode === "shell" ? (
-              <div className="min-w-0 max-w-full text-[11px] text-[var(--text-tertiary)]">
-                <div className="inline-flex min-w-0 max-w-full items-center gap-2 px-1 py-0.5">
-                  <Terminal className="h-3.5 w-3.5 shrink-0" />
-                  <span className="shrink-0 font-medium text-[var(--text-secondary)]">/run</span>
-                  <span
-                    className="truncate font-mono text-[var(--text-primary)]"
-                    title={activeTerminalState.cwd}
-                  >
-                    {activeTerminalState.cwd}
-                  </span>
-                </div>
+                    {renderPendingAttachmentPreview(attachment)}
+                    <div className="min-w-0">
+                      <div className="max-w-[180px] truncate text-xs text-[var(--text-secondary)]">
+                        {attachment.fileName}
+                      </div>
+                      <div className="text-[10px] uppercase tracking-wide text-[var(--text-tertiary)]">
+                        {attachmentKindLabel(attachment.mimeType)}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => removePendingAttachment(attachment.id)}
+                      className="p-0.5 text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
+                      aria-label={`Remove ${attachment.fileName}`}
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
               </div>
-            ) : activeComposerMode === "image" ? (
-              <div className="min-w-0 max-w-full text-[11px] text-[var(--text-tertiary)]">
-                <div className="inline-flex min-w-0 max-w-full items-center gap-2 px-1 py-0.5">
-                  <ImageIcon className="h-3.5 w-3.5 shrink-0" />
-                  <span className="shrink-0 font-medium text-[var(--text-secondary)]">model</span>
-                  <span
-                    className="truncate font-mono text-[var(--text-primary)]"
-                    title={imageGenerationModel}
-                  >
-                    {imageGenerationModel}
-                  </span>
-                </div>
-              </div>
-            ) : activeComposerMode === "chat" && hasPendingAudioAttachments ? (
-              <div className="flex items-center gap-1 text-[11px] text-[var(--text-tertiary)]">
+            )}
+            <div className="flex items-end gap-1.5">
+              {activeComposerMode !== "shell" ? (
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={currentSessionIsWorking}
+                  className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-50"
+                  title={activeComposerMode === "image" ? "Attach reference image" : "Attach file"}
+                  aria-label={activeComposerMode === "image" ? "Attach reference image" : "Attach file"}
+                >
+                  <Paperclip className="w-4 h-4" />
+                </button>
+              ) : null}
+              <textarea
+                ref={textareaRef}
+                value={activeDraft}
+                onFocus={() => {
+                  ensureComposerSession();
+                }}
+                onChange={e => {
+                  const sessionKey = currentSession || ensureComposerSession();
+                  if (!sessionKey) return;
+                  const nextValue = e.target.value;
+                  if (activeComposerMode === "shell") {
+                    setShellDraftsBySession((prev) => {
+                      if ((prev[sessionKey] || "") === nextValue) return prev;
+                      return { ...prev, [sessionKey]: nextValue };
+                    });
+                  } else if (activeComposerMode === "image") {
+                    setImageDraftsBySession((prev) => {
+                      if ((prev[sessionKey] || "") === nextValue) return prev;
+                      return { ...prev, [sessionKey]: nextValue };
+                    });
+                  } else {
+                    setDraftsBySession((prev) => {
+                      if ((prev[sessionKey] || "") === nextValue) return prev;
+                      return { ...prev, [sessionKey]: nextValue };
+                    });
+                  }
+                  const ta = e.target;
+                  ta.style.height = 'auto';
+                  const lineHeight = parseInt(getComputedStyle(ta).lineHeight) || 20;
+                  const maxHeight = lineHeight * 5;
+                  ta.style.height = `${Math.min(ta.scrollHeight, maxHeight)}px`;
+                  ta.style.overflowY = ta.scrollHeight > maxHeight ? 'auto' : 'hidden';
+                }}
+                onKeyDown={e => {if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleComposerSend(); }}}
+                placeholder={
+                  activeComposerMode === "shell"
+                    ? "Run a command in the workspace shell"
+                    : activeComposerMode === "image"
+                      ? "Describe the image you want to generate"
+                      : "Message your assistant"
+                }
+                rows={1}
+                className="chat-composer-textarea min-h-[44px] flex-1 resize-none border-0 bg-transparent px-2 py-2.5 text-[15px] leading-[1.45] text-[var(--text-primary)] outline-none focus:outline-none focus-visible:outline-none placeholder:text-[var(--text-tertiary)]"
+                style={{ overflow: 'hidden' }}
+              />
+              {canCancelCurrentWork ? (
                 <button
                   type="button"
-                  onClick={() => void transcribePendingAudio()}
-                  disabled={currentSessionIsWorking || isTranscribing}
-                  className="inline-flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-secondary)] px-2 py-1 text-[11px] font-medium text-[var(--text-primary)] hover:bg-[var(--system-gray-6)] disabled:cursor-not-allowed disabled:opacity-60"
+                  onClick={() => void cancelCurrentWork()}
+                  disabled={cancelInFlight}
+                  className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-black text-white shadow-sm transition-all duration-200 ease-out hover:bg-black/85 active:scale-95 disabled:cursor-not-allowed disabled:opacity-60"
+                  title={cancelInFlight ? "Stopping" : "Stop response"}
+                  aria-label={cancelInFlight ? "Stopping response" : "Stop response"}
                 >
-                  {isTranscribing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Music2 className="h-3 w-3" />}
-                  <span>Transcribe audio</span>
+                  {cancelInFlight ? <Loader2 className="h-[17px] w-[17px] animate-spin" /> : <Square className="h-[15px] w-[15px] fill-current" />}
                 </button>
+              ) : activeComposerMode === "chat" ? (
+                <>
+                  {chatVoiceCaptureActive ? (
+                    <button
+                      type="button"
+                      onClick={stopChatVoiceCapture}
+                      className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-black text-white shadow-sm transition-all duration-200 ease-out hover:bg-black/85 active:scale-95"
+                      title="Stop recording"
+                      aria-label="Stop recording"
+                    >
+                      <Square className="h-[15px] w-[15px] fill-current" />
+                    </button>
+                  ) : null}
+                  {chatHasSendableContent ? (
+                    <button
+                      type="button"
+                      onClick={handleComposerSend}
+                      disabled={composerSendDisabled}
+                      className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[var(--purple-accent)] text-white shadow-[0_10px_26px_rgba(91,36,139,0.26)] transition-all duration-200 ease-out hover:bg-[var(--purple-accent-hover)] hover:shadow-[0_12px_30px_rgba(91,36,139,0.34)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+                      title="Send"
+                      aria-label="Send"
+                    >
+                      <Send className="h-[18px] w-[18px]" />
+                    </button>
+                  ) : !chatVoiceCaptureActive ? (
+                    <button
+                      type="button"
+                      onClick={() => void startChatVoiceCapture()}
+                      disabled={chatMicDisabled || !(liveSpeech.isSupported || streamingSpeech.isSupported)}
+                      className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-[var(--text-primary)] transition-all duration-200 ease-out hover:bg-[var(--bg-tertiary)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+                      title={liveSpeech.isSupported || streamingSpeech.isSupported ? "Record" : "Microphone unavailable"}
+                      aria-label={liveSpeech.isSupported || streamingSpeech.isSupported ? "Record" : "Microphone unavailable"}
+                    >
+                      <Mic className="h-[18px] w-[18px]" />
+                    </button>
+                  ) : null}
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleComposerSend}
+                  disabled={composerSendDisabled}
+                  className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[var(--purple-accent)] text-white shadow-sm transition-all duration-200 ease-out hover:bg-[var(--purple-accent-hover)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Send className="h-[18px] w-[18px]" />
+                </button>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2 px-2 pt-1">
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+                {([
+                  { key: "chat", label: "Chat", icon: Bot },
+                  { key: "shell", label: "Shell", icon: Terminal },
+                  { key: "image", label: "Image", icon: ImageIcon },
+                ] as const).map((mode) => {
+                  const Icon = mode.icon;
+                  const active = activeComposerMode === mode.key;
+                  return (
+                    <button
+                      key={mode.key}
+                      type="button"
+                      onClick={() => {
+                        const sessionKey = currentSession || ensureComposerSession();
+                        if (!sessionKey) return;
+                        setComposerModeForSession(sessionKey, mode.key);
+                        requestAnimationFrame(() => textareaRef.current?.focus());
+                      }}
+                      className={clsx(
+                        "inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition-colors",
+                        active
+                          ? "bg-[var(--bg-tertiary)] text-[var(--text-primary)]"
+                          : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+                      )}
+                      aria-pressed={active}
+                    >
+                      <Icon className="h-3.5 w-3.5" />
+                      <span>{mode.label}</span>
+                    </button>
+                  );
+                })}
               </div>
-            ) : null}
-          </div>
-          <div className="flex items-end gap-2">
-            {activeComposerMode !== "shell" ? (
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                disabled={currentSessionIsWorking}
-                className="btn-secondary chat-composer-icon-button !p-0"
-                title={activeComposerMode === "image" ? "Attach reference image" : "Attach file"}
-                aria-label={activeComposerMode === "image" ? "Attach reference image" : "Attach file"}
-              >
-                <Paperclip className="w-4 h-4" />
-              </button>
-            ) : null}
-            <textarea
-              ref={textareaRef}
-              value={activeDraft}
-              onFocus={() => {
-                ensureComposerSession();
-              }}
-              onChange={e => {
-                const sessionKey = currentSession || ensureComposerSession();
-                if (!sessionKey) return;
-                const nextValue = e.target.value;
-                if (activeComposerMode === "shell") {
-                  setShellDraftsBySession((prev) => {
-                    if ((prev[sessionKey] || "") === nextValue) return prev;
-                    return { ...prev, [sessionKey]: nextValue };
-                  });
-                } else if (activeComposerMode === "image") {
-                  setImageDraftsBySession((prev) => {
-                    if ((prev[sessionKey] || "") === nextValue) return prev;
-                    return { ...prev, [sessionKey]: nextValue };
-                  });
-                } else {
-                  setDraftsBySession((prev) => {
-                    if ((prev[sessionKey] || "") === nextValue) return prev;
-                    return { ...prev, [sessionKey]: nextValue };
-                  });
-                }
-                const ta = e.target;
-                ta.style.height = 'auto';
-                const lineHeight = parseInt(getComputedStyle(ta).lineHeight) || 20;
-                const maxHeight = lineHeight * 5;
-                ta.style.height = `${Math.min(ta.scrollHeight, maxHeight)}px`;
-                ta.style.overflowY = ta.scrollHeight > maxHeight ? 'auto' : 'hidden';
-              }}
-              onKeyDown={e => {if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleComposerSend(); }}}
-              placeholder={
-                activeComposerMode === "shell"
-                  ? "Run a command in the workspace shell"
-                  : activeComposerMode === "image"
-                    ? "Describe the image you want to generate"
-                    : "Message your assistant"
-              }
-              rows={1}
-              className="form-input chat-composer-input flex-1 resize-none !border-[var(--composer-border)] focus:!border-[var(--purple-accent)]"
-              style={{ overflow: 'hidden' }}
-            />
-            {canCancelCurrentWork ? (
-              <button
-                type="button"
-                onClick={() => void cancelCurrentWork()}
-                disabled={cancelInFlight}
-                className="chat-composer-icon-button inline-flex shrink-0 items-center justify-center border border-red-400/60 bg-red-500/15 text-red-500 shadow-sm transition-all duration-200 ease-out hover:bg-red-500/25 active:scale-95 disabled:cursor-not-allowed disabled:opacity-60"
-                title={cancelInFlight ? "Stopping" : "Stop"}
-                aria-label={cancelInFlight ? "Stopping response" : "Stop response"}
-              >
-                {cancelInFlight ? <Loader2 className="h-[18px] w-[18px] animate-spin" /> : <Square className="h-[17px] w-[17px] fill-current" />}
-              </button>
-            ) : activeComposerMode === "chat" ? (
-              <>
-                {chatVoiceCaptureActive ? (
+              {activeComposerMode === "shell" ? (
+                <div className="min-w-0 max-w-full text-[11px] text-[var(--text-tertiary)]">
+                  <div className="inline-flex min-w-0 max-w-full items-center gap-2 px-1 py-0.5">
+                    <Terminal className="h-3.5 w-3.5 shrink-0" />
+                    <span className="shrink-0 font-medium text-[var(--text-secondary)]">/run</span>
+                    <span
+                      className="truncate font-mono text-[var(--text-primary)]"
+                      title={activeTerminalState.cwd}
+                    >
+                      {activeTerminalState.cwd}
+                    </span>
+                  </div>
+                </div>
+              ) : activeComposerMode === "image" ? (
+                <div className="min-w-0 max-w-full text-[11px] text-[var(--text-tertiary)]">
+                  <div className="inline-flex min-w-0 max-w-full items-center gap-2 px-1 py-0.5">
+                    <ImageIcon className="h-3.5 w-3.5 shrink-0" />
+                    <span className="shrink-0 font-medium text-[var(--text-secondary)]">model</span>
+                    <span
+                      className="truncate font-mono text-[var(--text-primary)]"
+                      title={imageGenerationModel}
+                    >
+                      {imageGenerationModel}
+                    </span>
+                  </div>
+                </div>
+              ) : activeComposerMode === "chat" && hasPendingAudioAttachments ? (
+                <div className="flex items-center gap-1 text-[11px] text-[var(--text-tertiary)]">
                   <button
                     type="button"
-                    onClick={stopChatVoiceCapture}
-                    className="chat-composer-icon-button inline-flex shrink-0 items-center justify-center border border-red-400/60 bg-red-500/15 text-red-500 shadow-sm transition-all duration-200 ease-out hover:bg-red-500/25 active:scale-95"
-                    title="Stop recording"
-                    aria-label="Stop recording"
+                    onClick={() => void transcribePendingAudio()}
+                    disabled={currentSessionIsWorking || isTranscribing}
+                    className="inline-flex items-center gap-1 rounded-md bg-[var(--bg-secondary)] px-2 py-1 text-[11px] font-medium text-[var(--text-primary)] hover:bg-[var(--system-gray-6)] disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    <Square className="h-[17px] w-[17px] fill-current" />
+                    {isTranscribing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Music2 className="h-3 w-3" />}
+                    <span>Transcribe audio</span>
                   </button>
-                ) : null}
-                {chatHasSendableContent ? (
-                  <button
-                    type="button"
-                    onClick={handleComposerSend}
-                    disabled={composerSendDisabled}
-                    className="chat-composer-icon-button inline-flex shrink-0 items-center justify-center border border-[var(--purple-accent-hover)]/70 bg-[var(--purple-accent)] text-white shadow-[0_10px_26px_rgba(91,36,139,0.26)] transition-all duration-200 ease-out hover:bg-[var(--purple-accent-hover)] hover:shadow-[0_12px_30px_rgba(91,36,139,0.34)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
-                    title="Send"
-                    aria-label="Send"
-                  >
-                    <Send className="h-[18px] w-[18px]" />
-                  </button>
-                ) : !chatVoiceCaptureActive ? (
-                  <button
-                    type="button"
-                    onClick={() => void startChatVoiceCapture()}
-                    disabled={chatMicDisabled || !(liveSpeech.isSupported || streamingSpeech.isSupported)}
-                    className="chat-composer-icon-button inline-flex shrink-0 items-center justify-center border border-[var(--border-default)] bg-[var(--bg-card)] text-[var(--text-primary)] shadow-sm transition-all duration-200 ease-out hover:bg-[var(--bg-tertiary)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
-                    title={liveSpeech.isSupported || streamingSpeech.isSupported ? "Record" : "Microphone unavailable"}
-                    aria-label={liveSpeech.isSupported || streamingSpeech.isSupported ? "Record" : "Microphone unavailable"}
-                  >
-                    <Mic className="h-[18px] w-[18px]" />
-                  </button>
-                ) : null}
-              </>
-            ) : (
-              <button
-                type="button"
-                onClick={handleComposerSend}
-                disabled={composerSendDisabled}
-                className="chat-composer-icon-button inline-flex shrink-0 items-center justify-center border border-[var(--purple-accent-hover)]/70 bg-[var(--purple-accent)] text-white shadow-sm transition-all duration-200 ease-out hover:bg-[var(--purple-accent-hover)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <Send className="h-[18px] w-[18px]" />
-              </button>
-            )}
+                </div>
+              ) : null}
+            </div>
           </div>
         </div>
         {dragActive && activeComposerMode !== "shell" && (

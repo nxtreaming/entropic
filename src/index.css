@@ -1091,6 +1091,13 @@ button:focus-visible,
 .form-input:focus-visible {
   outline: none; /* ring handles it */
 }
+.chat-composer-textarea,
+.chat-composer-textarea:focus,
+.chat-composer-textarea:focus-visible {
+  border: 0 !important;
+  outline: none !important;
+  box-shadow: none !important;
+}
 
 /* Animations */
 @keyframes fadeIn {

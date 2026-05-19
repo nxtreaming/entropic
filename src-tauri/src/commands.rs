@@ -57,7 +57,9 @@ const ENTROPIC_PROXY_ALLOWED_HOSTS: &[&str] = &[
 ];
 const BROWSER_SERVICE_PORT: &str = "19791";
 const BROWSER_SERVICE_HOST_PORT: &str = "19792";
-const BROWSER_ALLOW_UNSAFE_NO_SANDBOX: &str = "0";
+const BROWSER_SERVICE_REQUEST_TIMEOUT_SECS: &str = "45";
+const BROWSER_SERVICE_CONNECT_TIMEOUT_SECS: &str = "5";
+const BROWSER_ALLOW_UNSAFE_NO_SANDBOX: &str = "1";
 const BROWSER_ALLOW_INSECURE_SECURE_CONTEXTS: &str = "0";
 const BROWSER_SERVICE_PATH: &str = "/app/browser-service/server.mjs";
 const BROWSER_SERVICE_LOG_PATH: &str = "/data/browser/browser-service.log";
@@ -7907,6 +7909,10 @@ fn browser_service_curl_output(
         container.to_string(),
         "curl".to_string(),
         "-sS".to_string(),
+        "--connect-timeout".to_string(),
+        BROWSER_SERVICE_CONNECT_TIMEOUT_SECS.to_string(),
+        "--max-time".to_string(),
+        BROWSER_SERVICE_REQUEST_TIMEOUT_SECS.to_string(),
         "-X".to_string(),
         method.to_string(),
         "-w".to_string(),
@@ -13757,6 +13763,7 @@ async fn start_gateway_inner(
     let mut docker_args = vec![
         "run".to_string(),
         "-d".to_string(),
+        "--init".to_string(),
         "--name".to_string(),
         OPENCLAW_CONTAINER.to_string(),
         "--restart".to_string(),
@@ -14057,6 +14064,7 @@ async fn start_gateway_with_proxy_inner(
         let mut docker_args = vec![
             "run".to_string(),
             "-d".to_string(),
+            "--init".to_string(),
             "--name".to_string(),
             OPENCLAW_CONTAINER.to_string(),
             "--restart".to_string(),
@@ -18310,6 +18318,84 @@ pub async fn browser_session_close(session_id: String) -> Result<(), String> {
     let _: serde_json::Value =
         browser_service_request("DELETE", &format!("/sessions/{}", session_id), None)?;
     Ok(())
+}
+
+fn restart_browser_service_legacy(container: &str) -> Result<(), String> {
+let script = r#"
+set -eu
+browser_pids="$(ps -eo pid,comm,args | awk '$2=="node" && $0 ~ /\/app\/browser-service\/server\.mjs/ {print $1}')"
+if [ -n "$browser_pids" ]; then
+  kill $browser_pids 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if ! curl -fsS "http://127.0.0.1:${ENTROPIC_BROWSER_SERVICE_PORT:-19791}/health" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.2
+  done
+  browser_pids="$(ps -eo pid,comm,args | awk '$2=="node" && $0 ~ /\/app\/browser-service\/server\.mjs/ {print $1}')"
+  if [ -n "$browser_pids" ]; then
+    kill -9 $browser_pids 2>/dev/null || true
+  fi
+fi
+ps -eo pid,comm | awk '$2 ~ /^chrome/ && $1 != 1 {print $1}' | xargs -r kill -9 2>/dev/null || true
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if ! curl -fsS "http://127.0.0.1:${ENTROPIC_BROWSER_SERVICE_PORT:-19791}/health" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.2
+done
+mkdir -p /data/browser/profile
+rm -rf /data/browser/profile/*
+export ENTROPIC_BROWSER_HEADFUL="${ENTROPIC_BROWSER_HEADFUL:-1}"
+export ENTROPIC_BROWSER_SERVICE_PORT="${ENTROPIC_BROWSER_SERVICE_PORT:-19791}"
+export ENTROPIC_BROWSER_HOST_PORT="${ENTROPIC_BROWSER_HOST_PORT:-19792}"
+export ENTROPIC_BROWSER_BIND="${ENTROPIC_BROWSER_BIND:-0.0.0.0}"
+export ENTROPIC_BROWSER_PROFILE="${ENTROPIC_BROWSER_PROFILE:-/data/browser/profile}"
+export ENTROPIC_BROWSER_ALLOW_UNSAFE_NO_SANDBOX="${ENTROPIC_BROWSER_ALLOW_UNSAFE_NO_SANDBOX:-1}"
+export DISPLAY="${DISPLAY:-:99}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/runtime-node}"
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
+nohup node /app/browser-service/server.mjs >/data/browser/browser-service.log 2>&1 &
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if curl -fsS "http://127.0.0.1:${ENTROPIC_BROWSER_SERVICE_PORT}/health" >/dev/null 2>&1; then
+    exit 0
+  fi
+  sleep 0.3
+done
+cat /data/browser/browser-service.log 2>/dev/null | tail -40 >&2 || true
+exit 1
+"#;
+
+    docker_command()
+        .args(["exec", container, "sh", "-lc", script])
+        .output()
+        .map_err(|e| format!("Failed to restart browser service: {}", e))
+        .and_then(|output| {
+            if output.status.success() {
+                Ok(())
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                Err(if stderr.is_empty() {
+                    "Failed to restart browser service".to_string()
+                } else {
+                    format!("Failed to restart browser service: {}", stderr)
+                })
+            }
+        })
+}
+
+#[tauri::command]
+pub async fn browser_sessions_close_all() -> Result<(), String> {
+    match browser_service_request::<serde_json::Value>("DELETE", "/sessions", None) {
+        Ok(_) => Ok(()),
+        Err(reset_error) => {
+            let container = running_gateway_container_name()
+                .ok_or_else(|| "Gateway container is not running. Start the sandbox first.".to_string())?;
+            restart_browser_service_legacy(container)
+                .map_err(|restart_error| format!("{}\n\nLegacy reset failed: {}", reset_error, restart_error))
+        }
+    }
 }
 
 #[tauri::command]

@@ -35,12 +35,20 @@ const WORKSPACE_RELOAD_MAX_FILES = Math.max(
   100,
   Number(process.env.ENTROPIC_BROWSER_WORKSPACE_RELOAD_MAX_FILES || 2000),
 );
+const BROWSER_OPERATION_TIMEOUT_MS = Math.max(
+  5000,
+  Number(process.env.ENTROPIC_BROWSER_OPERATION_TIMEOUT_MS || DEFAULT_TIMEOUT_MS + 5000),
+);
+const BROWSER_CONTEXT_CLOSE_TIMEOUT_MS = Math.max(
+  1000,
+  Number(process.env.ENTROPIC_BROWSER_CONTEXT_CLOSE_TIMEOUT_MS || 3000),
+);
 const MAX_INTERACTIVE_ELEMENTS = 75;
 const DEFAULT_VIEWPORT = { width: 1440, height: 900 };
 const HEADFUL_MIN_VIEWPORT = { width: 640, height: 420 };
 const BROWSER_DEVICE_SCALE_FACTOR = Math.max(
   1,
-  Math.min(3, Number(process.env.ENTROPIC_BROWSER_DEVICE_SCALE_FACTOR || 2)),
+  Math.min(3, Number(process.env.ENTROPIC_BROWSER_DEVICE_SCALE_FACTOR || 1)),
 );
 const DISPLAY_AVAILABLE = typeof process.env.DISPLAY === "string" && process.env.DISPLAY.trim() !== "";
 const USE_HEADFUL_DISPLAY = (process.env.ENTROPIC_BROWSER_HEADFUL ?? "1") !== "0" && DISPLAY_AVAILABLE;
@@ -154,7 +162,11 @@ function secureContextOverrideOrigin(targetUrl) {
 }
 
 function buildLaunchArgs(secureOrigins = [], viewport = DEFAULT_VIEWPORT) {
-  const args = ["--disable-dev-shm-usage"];
+  const args = [
+    "--disable-dev-shm-usage",
+    "--renderer-process-limit=4",
+    "--disable-site-isolation-trials",
+  ];
   if (ALLOW_UNSAFE_NO_SANDBOX) {
     args.push("--no-sandbox");
   }
@@ -227,6 +239,22 @@ function isAuthorizedBrowserControlRequest(req, url = null) {
 
 function sendBrowserControlUnauthorized(res) {
   sendJson(res, 401, { error: "Unauthorized browser control request" });
+}
+
+function withTimeout(promise, timeoutMs, label) {
+  let timeout = null;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timeout = setTimeout(() => {
+        reject(new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)}s`));
+      }, timeoutMs);
+    }),
+  ]).finally(() => {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  });
 }
 
 function proxyPortFromHostHeader(hostHeader) {
@@ -1652,6 +1680,10 @@ async function relaunchSessionContext(session) {
 }
 
 async function createSession(initialUrl, viewportInput = DEFAULT_VIEWPORT) {
+  if (USE_HEADFUL_DISPLAY && sessions.size > 0) {
+    await closeAllSessions("Creating a new headful browser session");
+  }
+
   const id = randomUUID();
   const userDataDir = path.join(PROFILE_ROOT, id);
   fs.mkdirSync(userDataDir, { recursive: true });
@@ -1662,7 +1694,11 @@ async function createSession(initialUrl, viewportInput = DEFAULT_VIEWPORT) {
   }
 
   const viewport = normalizeViewport(viewportInput.width, viewportInput.height);
-  const context = await launchBrowserContext(userDataDir, secureOrigins, viewport);
+  const context = await withTimeout(
+    launchBrowserContext(userDataDir, secureOrigins, viewport),
+    BROWSER_OPERATION_TIMEOUT_MS,
+    "Browser context launch",
+  );
 
   const session = {
     id,
@@ -1690,25 +1726,77 @@ async function createSession(initialUrl, viewportInput = DEFAULT_VIEWPORT) {
   installSessionContextObservers(session);
   installSessionPageObservers(session, session.page);
 
-  if (initialUrl) {
-    return navigateSession(session, initialUrl);
+  try {
+    if (initialUrl) {
+      return await withTimeout(
+        navigateSession(session, initialUrl),
+        BROWSER_OPERATION_TIMEOUT_MS,
+        "Browser navigation",
+      );
+    }
+    if (USE_HEADFUL_DISPLAY) {
+      return await withTimeout(buildLiveSnapshot(session), BROWSER_OPERATION_TIMEOUT_MS, "Browser snapshot");
+    }
+    return await withTimeout(buildSnapshot(session), BROWSER_OPERATION_TIMEOUT_MS, "Browser snapshot");
+  } catch (error) {
+    await closeSession(id, { missingOk: true, reason: "Failed to create browser session" });
+    throw error;
   }
-  if (USE_HEADFUL_DISPLAY) {
-    return buildLiveSnapshot(session);
-  }
-  return buildSnapshot(session);
 }
 
-async function closeSession(id) {
-  const session = getSession(id);
+function killBrowserProcessForContext(context, reason) {
+  try {
+    const process = context?.browser?.()?.process?.();
+    if (process && !process.killed) {
+      console.warn("[EntropicBrowserService] killing stuck browser process", { pid: process.pid, reason });
+      process.kill("SIGKILL");
+    }
+  } catch (error) {
+    console.warn("[EntropicBrowserService] failed to kill browser process", error);
+  }
+}
+
+async function closeSession(id, options = {}) {
+  const session = sessions.get(id);
+  if (!session) {
+    if (options.missingOk) {
+      return;
+    }
+    throw new Error(`Unknown browser session: ${id}`);
+  }
   sessions.delete(id);
   clearSessionStateSync(session);
   clearSessionWorkspaceAutoReload(session);
   for (const client of session.liveClients) {
     client.close(1000, "Session closed");
   }
-  await resetSessionStream(session, { detach: false });
-  await session.context.close();
+  await withTimeout(
+    resetSessionStream(session, { detach: false }),
+    BROWSER_CONTEXT_CLOSE_TIMEOUT_MS,
+    "Browser stream reset",
+  ).catch((error) => {
+    console.warn("[EntropicBrowserService] browser stream reset failed", error);
+  });
+  await withTimeout(
+    session.context.close(),
+    BROWSER_CONTEXT_CLOSE_TIMEOUT_MS,
+    "Browser context close",
+  ).catch((error) => {
+    console.warn("[EntropicBrowserService] browser context close failed", error);
+    killBrowserProcessForContext(session.context, options.reason || "Browser context close timed out");
+  });
+  fs.rmSync(session.userDataDir, { recursive: true, force: true });
+}
+
+async function closeAllSessions(reason = "Closing browser sessions") {
+  const ids = [...sessions.keys()];
+  await Promise.all(
+    ids.map((id) =>
+      closeSession(id, { missingOk: true, reason }).catch((error) => {
+        console.warn("[EntropicBrowserService] failed to close browser session", { id, error });
+      }),
+    ),
+  );
 }
 
 async function clickSession(session, x, y) {
@@ -1933,6 +2021,12 @@ const server = http.createServer(async (req, res) => {
         height: body.viewport_height,
       });
       sendJson(res, 200, snapshot);
+      return;
+    }
+
+    if (req.method === "DELETE" && parts.length === 1 && parts[0] === "sessions") {
+      await closeAllSessions("Browser sessions reset by control request");
+      sendJson(res, 200, { ok: true });
       return;
     }
 

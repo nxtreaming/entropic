@@ -40,6 +40,7 @@ echo ""
 
 docker_args=(
     run -d
+    --init
     --name "$CONTAINER_NAME"
     --user 1000:1000
     --cap-drop=ALL
@@ -50,7 +51,7 @@ docker_args=(
     -v "$DATA_VOLUME":/data
     -e "ENTROPIC_BROWSER_HOST_PORT=${BROWSER_HOST_PORT}"
     -e "ENTROPIC_BROWSER_HEADFUL=1"
-    -e "ENTROPIC_BROWSER_ALLOW_UNSAFE_NO_SANDBOX=0"
+    -e "ENTROPIC_BROWSER_ALLOW_UNSAFE_NO_SANDBOX=1"
     -e "ENTROPIC_BROWSER_ALLOW_INSECURE_SECURE_CONTEXTS=0"
     -e "ENTROPIC_BROWSER_BIND=0.0.0.0"
     -p "127.0.0.1:${PORT}:18789"

@@ -267,6 +267,7 @@ const CHAT_WORKSPACE_PREFIXES = [
 const CHAT_WORKSPACE_PATH_RE = /((?:\/data\/(?:\.openclaw\/)?workspace|\/home\/node\/\.openclaw\/workspace)(?:\/[^\s`"'<>]+)?)/g;
 const DEFAULT_BROWSER_URL = "https://www.google.com";
 const DEFAULT_BROWSER_LIVE_WS_BASE = "ws://127.0.0.1:19792/live";
+const BROWSER_CLIENT_REQUEST_TIMEOUT_MS = 50_000;
 const WORKSPACE_FOLDER_REFRESH_MS = 4000;
 const DESKTOP_CACHE_STALE_MS = 12000;
 const DESKTOP_WARM_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -477,7 +478,7 @@ function restoreBrowserTabState(tab: PersistedBrowserTab): BrowserTabState {
     id: tab.id,
     title: tab.title ?? null,
     urlInput: tab.urlInput || DEFAULT_BROWSER_URL,
-    sessionId: tab.sessionId ?? null,
+    sessionId: null,
     embeddedPreview: tab.embeddedPreviewUrl
       ? {
           url: tab.embeddedPreviewUrl,
@@ -630,6 +631,28 @@ function sleep(ms: number) {
   return new Promise<void>((resolve) => {
     window.setTimeout(resolve, ms);
   });
+}
+
+function browserCommandTimeoutMessage(command: string) {
+  return `Browser command \`${command}\` timed out after ${Math.round(BROWSER_CLIENT_REQUEST_TIMEOUT_MS / 1000)}s. The runtime browser service may still be launching or stuck.`;
+}
+
+async function invokeBrowserCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  let timeoutId: number | null = null;
+  try {
+    return await Promise.race([
+      invoke<T>(command, args),
+      new Promise<T>((_, reject) => {
+        timeoutId = window.setTimeout(() => {
+          reject(new Error(browserCommandTimeoutMessage(command)));
+        }, BROWSER_CLIENT_REQUEST_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+    }
+  }
 }
 
 function desktopIconGridKey(point: WindowPoint) {
@@ -1046,6 +1069,7 @@ export function Files({
   const desktopImagePreviewSeqRef = useRef(0);
   const desktopActionHandlerRef = useRef<((action: DesktopAction) => Promise<void>) | null>(null);
   const desktopLoadedAtRef = useRef(initialDesktopWarmCache.lastLoadedAt);
+  const activeBrowserOpenRef = useRef<Promise<void> | null>(null);
 
   // Chat
   const [chatSessions, setChatSessions] = useState<SharedChatSession[]>([]);
@@ -1078,6 +1102,7 @@ export function Files({
   const browserLiveFrameRafRef = useRef<number | null>(null);
   const browserLiveLastFrameRef = useRef<string | null>(null);
   const browserLiveSizeRef = useRef<string>("");
+  const browserNavigationSeqRef = useRef(0);
   const browserEmbeddedPreviewSyncKeyRef = useRef<string>("");
   const browserEmbeddedPreviewSnapshotPendingRef = useRef<string>("");
   const [terminalSessionId, setTerminalSessionId] = useState<string | null>(null);
@@ -1113,9 +1138,24 @@ export function Files({
       if (!raw) return;
       const saved = JSON.parse(raw) as Partial<DesktopSessionState>;
       if (!isRecord(saved)) return;
+      const pendingDesktopHandoff = (() => {
+        try {
+          const handoffRaw = window.localStorage.getItem(DESKTOP_HANDOFF_STORAGE_KEY);
+          return handoffRaw ? JSON.parse(handoffRaw) : null;
+        } catch {
+          return null;
+        }
+      })();
+      const pendingBrowserHandoff =
+        pendingDesktopAction?.action.type === "open_browser_url" ||
+        resolveDesktopHandoff(pendingDesktopHandoff).type === "open_browser_url";
 
       if (typeof saved.finderOpen === "boolean") setFinderOpen(saved.finderOpen);
-      if (typeof saved.chatOpen === "boolean") setChatOpen(saved.chatOpen);
+      if (pendingBrowserHandoff) {
+        setChatOpen(false);
+      } else if (typeof saved.chatOpen === "boolean") {
+        setChatOpen(saved.chatOpen);
+      }
       if (typeof saved.chatNavCollapsed === "boolean") setChatNavCollapsed(saved.chatNavCollapsed);
       const savedBrowserOpen = saved.browserOpen === true;
       if (typeof saved.terminalOpen === "boolean") setTerminalOpen(saved.terminalOpen);
@@ -1188,9 +1228,17 @@ export function Files({
 
       const nextWindowZ = asWindowZ(saved.windowZ);
       if (nextWindowZ) {
-        setWindowZ(nextWindowZ);
+        if (pendingBrowserHandoff) {
+          const browserZ = Math.max(...Object.values(nextWindowZ), zCounter.current) + 1;
+          setWindowZ({ ...nextWindowZ, browser: browserZ });
+          zCounter.current = browserZ;
+        } else {
+          setWindowZ(nextWindowZ);
+        }
       }
-      if (typeof saved.zCounter === "number" && Number.isFinite(saved.zCounter)) {
+      if (pendingBrowserHandoff) {
+        zCounter.current = Math.max(zCounter.current, nextWindowZ ? Math.max(...Object.values(nextWindowZ)) + 1 : zCounter.current);
+      } else if (typeof saved.zCounter === "number" && Number.isFinite(saved.zCounter)) {
         zCounter.current = saved.zCounter;
       } else if (nextWindowZ) {
         zCounter.current = Math.max(...Object.values(nextWindowZ));
@@ -1205,9 +1253,7 @@ export function Files({
       if (saved.viewMode === "grid" || saved.viewMode === "list") setViewMode(saved.viewMode);
       if (typeof saved.selected === "string" || saved.selected === null) setSelected(saved.selected ?? null);
       if (typeof saved.browserUrlInput === "string") setBrowserUrlInput(presentBrowserUrl(saved.browserUrlInput));
-      if (typeof saved.browserSessionId === "string" || saved.browserSessionId === null) {
-        setBrowserSessionId(saved.browserSessionId ?? null);
-      }
+      setBrowserSessionId(null);
       if (typeof saved.terminalSessionId === "string" || saved.terminalSessionId === null) {
         setTerminalSessionId(saved.terminalSessionId ?? null);
       }
@@ -1278,7 +1324,7 @@ export function Files({
           } else {
             setBrowserTabs(restoredTabs);
             setActiveBrowserTabId(activeTab?.id ?? null);
-            setBrowserOpen(savedBrowserOpen);
+            setBrowserOpen(pendingBrowserHandoff || savedBrowserOpen);
             if (activeTab) {
               setBrowserUrlInput(presentBrowserUrl(activeTab.urlInput));
               setBrowserSessionId(activeTab.sessionId);
@@ -1307,7 +1353,7 @@ export function Files({
           setBrowserLoading(false);
           setBrowserOpen(false);
         } else {
-          setBrowserOpen(savedBrowserOpen);
+          setBrowserOpen(pendingBrowserHandoff || savedBrowserOpen);
         }
       }
       const nextDesktopIcons = asDesktopIcons(saved.desktopIcons);
@@ -2047,7 +2093,7 @@ export function Files({
 
     if (closingTab.sessionId) {
       try {
-        await invoke("browser_session_close", { sessionId: closingTab.sessionId });
+        await invokeBrowserCommand<void>("browser_session_close", { sessionId: closingTab.sessionId });
       } catch {
         // Ignore background tab close failures.
       }
@@ -2086,6 +2132,43 @@ export function Files({
     browserLoading,
     browserTitle,
   ]);
+
+  useEffect(() => {
+    if (!browserLoading || browserUsingEmbeddedPreview) return;
+    const activeId = activeBrowserTabId;
+    const target = browserCurrentUrl || browserUrlInput || DEFAULT_BROWSER_URL;
+    const timeoutId = window.setTimeout(() => {
+      const message = browserCommandTimeoutMessage("browser_load");
+      clientLog("browser.loading.watchdog_timeout", { url: target, tabId: activeId });
+      browserNavigationSeqRef.current += 1;
+      closeBrowserLiveSocket();
+      resetBrowserLiveFrame();
+      setBrowserLoading(false);
+      setBrowserLoadError(message);
+      setBrowserLiveState(null);
+      setBrowserLiveConnected(false);
+      setBrowserLiveError(null);
+      setBrowserSnapshot(null);
+      setBrowserSessionId(null);
+      if (activeId) {
+        setBrowserTabs((prev) =>
+          prev.map((tab) =>
+            tab.id === activeId
+              ? {
+                  ...tab,
+                  loading: false,
+                  liveState: null,
+                  liveError: message,
+                  snapshot: null,
+                  sessionId: null,
+                }
+              : tab,
+          ),
+        );
+      }
+    }, BROWSER_CLIENT_REQUEST_TIMEOUT_MS + 5_000);
+    return () => window.clearTimeout(timeoutId);
+  }, [activeBrowserTabId, browserCurrentUrl, browserLoading, browserUsingEmbeddedPreview, browserUrlInput]);
 
   function browserFrameDataUrl(format: string | null | undefined, data: string) {
     const normalized = format === "png" ? "png" : "jpeg";
@@ -2246,16 +2329,17 @@ export function Files({
       return;
     }
     let cancelled = false;
+    const snapshotSeq = browserNavigationSeqRef.current;
     setBrowserLoading(true);
-    invoke<BrowserSnapshot>("browser_snapshot", { sessionId: browserSessionId })
+    invokeBrowserCommand<BrowserSnapshot>("browser_snapshot", { sessionId: browserSessionId })
       .then((snapshot) => {
-        if (cancelled) return;
+        if (cancelled || snapshotSeq !== browserNavigationSeqRef.current) return;
         setBrowserSnapshot(snapshot);
         setBrowserUrlInput(presentBrowserUrl(snapshot.url));
         setBrowserLoadError(null);
       })
       .catch((error) => {
-        if (cancelled) return;
+        if (cancelled || snapshotSeq !== browserNavigationSeqRef.current) return;
         setBrowserSessionId(null);
         setBrowserSnapshot(null);
         setBrowserLiveState(null);
@@ -2264,7 +2348,7 @@ export function Files({
         setBrowserLoadError(error instanceof Error ? error.message : String(error));
       })
       .finally(() => {
-        if (!cancelled) {
+        if (!cancelled && snapshotSeq === browserNavigationSeqRef.current) {
           setBrowserLoading(false);
         }
       });
@@ -2553,7 +2637,7 @@ export function Files({
       let snapshotSessionId: string | null = null;
       try {
         const viewport = browserRequestedViewportSize();
-        const snapshot = await invoke<BrowserSnapshot>("browser_session_create", {
+        const snapshot = await invokeBrowserCommand<BrowserSnapshot>("browser_session_create", {
           url: browserEmbeddedPreviewSnapshotTarget,
           viewportWidth: viewport.width,
           viewportHeight: viewport.height,
@@ -2566,7 +2650,7 @@ export function Files({
       } finally {
         if (snapshotSessionId) {
           try {
-            await invoke("browser_session_close", { sessionId: snapshotSessionId });
+            await invokeBrowserCommand<void>("browser_session_close", { sessionId: snapshotSessionId });
           } catch {
             // Ignore best-effort cleanup failures for fallback snapshots.
           }
@@ -2593,9 +2677,17 @@ export function Files({
   async function closeBrowserSession(sessionId: string | null) {
     if (!sessionId) return;
     try {
-      await invoke("browser_session_close", { sessionId });
+      await invokeBrowserCommand<void>("browser_session_close", { sessionId });
     } catch {
       // Ignore best-effort browser session cleanup failures.
+    }
+  }
+
+  async function resetBrowserSessions() {
+    try {
+      await invokeBrowserCommand<void>("browser_sessions_close_all");
+    } catch (error) {
+      clientLog("browser.sessions_reset.failed", { error: describeError(error) });
     }
   }
 
@@ -2604,7 +2696,7 @@ export function Files({
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
         const viewport = browserRequestedViewportSize();
-        return await invoke<BrowserSnapshot>("browser_session_create", {
+        return await invokeBrowserCommand<BrowserSnapshot>("browser_session_create", {
           url: targetUrl,
           viewportWidth: viewport.width,
           viewportHeight: viewport.height,
@@ -2612,6 +2704,7 @@ export function Files({
       } catch (error) {
         lastError = error;
         if (attempt === 0) {
+          await resetBrowserSessions();
           await sleep(250);
         }
       }
@@ -2639,13 +2732,17 @@ export function Files({
     await navigateBrowser(target, { sessionId: null });
   }
 
-  async function navigateBrowser(input: string, options?: { sessionId?: string | null }) {
+  async function navigateBrowser(input: string, options?: { sessionId?: string | null; tabId?: string | null }) {
     const next = normalizeBrowserUrl(input);
-    if (!next) return;
+    if (!next) return false;
+    const navigationSeq = browserNavigationSeqRef.current + 1;
+    browserNavigationSeqRef.current = navigationSeq;
+    const isCurrentNavigation = () => navigationSeq === browserNavigationSeqRef.current;
     const activeSessionId =
       options && Object.prototype.hasOwnProperty.call(options, "sessionId")
         ? options.sessionId ?? null
         : browserSessionId;
+    const targetTabId = options?.tabId ?? activeBrowserTabId ?? null;
     if (isTrustedLocalPreviewUrl(next)) {
       setBrowserEmbeddedPreview((prev) => ({
         url: next,
@@ -2654,19 +2751,42 @@ export function Files({
       setBrowserUrlInput(presentBrowserUrl(next));
       setBrowserLoadError(null);
       setBrowserLoading(false);
-      return;
+      return true;
     }
 
     setBrowserEmbeddedPreview(null);
     setBrowserLoadError(null);
     setBrowserLoading(true);
+    const initialTabId = targetTabId ?? activeBrowserTabId ?? browserTabs[0]?.id ?? makeBrowserTabId();
+    if (targetTabId || !activeBrowserTabId) {
+      setActiveBrowserTabId(initialTabId);
+    }
+    setBrowserTabs((prev) => {
+      const activeId = initialTabId;
+      const existing = prev.find((tab) => tab.id === activeId) ?? null;
+      const loadingTab = createBrowserTabState({
+        id: activeId,
+        title: existing?.title ?? null,
+        urlInput: presentBrowserUrl(next),
+        sessionId: activeSessionId,
+        embeddedPreview: null,
+        snapshot: null,
+        liveState: null,
+        liveError: null,
+        loading: true,
+      });
+      if (prev.some((tab) => tab.id === activeId)) {
+        return prev.map((tab) => (tab.id === activeId ? loadingTab : tab));
+      }
+      return [...prev, loadingTab];
+    });
     try {
       let snapshot: BrowserSnapshot;
       if (!activeSessionId) {
         snapshot = await createBrowserSessionSnapshot(next);
       } else {
         try {
-          snapshot = await invoke<BrowserSnapshot>("browser_navigate", { sessionId: activeSessionId, url: next });
+          snapshot = await invokeBrowserCommand<BrowserSnapshot>("browser_navigate", { sessionId: activeSessionId, url: next });
         } catch (error) {
           const initialMessage = describeError(error);
           closeBrowserLiveSocket();
@@ -2684,13 +2804,58 @@ export function Files({
           }
         }
       }
+      if (!isCurrentNavigation()) return false;
       setBrowserSessionId(snapshot.session_id);
       setBrowserSnapshot(snapshot);
       setBrowserUrlInput(presentBrowserUrl(snapshot.url));
+      setBrowserTabs((prev) => {
+        const activeId = initialTabId;
+        const nextTab = createBrowserTabState({
+          id: activeId,
+          title: snapshot.title || snapshot.url || null,
+          urlInput: presentBrowserUrl(snapshot.url),
+          sessionId: snapshot.session_id,
+          embeddedPreview: null,
+          snapshot,
+          liveState: null,
+          liveError: null,
+          loading: false,
+        });
+        if (prev.some((tab) => tab.id === activeId)) {
+          return prev.map((tab) => (tab.id === activeId ? nextTab : tab));
+        }
+        return [...prev, nextTab];
+      });
+      return true;
     } catch (e) {
-      setBrowserLoadError(describeError(e));
+      const message = describeError(e);
+      if (isCurrentNavigation()) {
+        clientLog("browser.navigate.failed", { url: next, error: message });
+        setBrowserLoadError(message);
+        setBrowserTabs((prev) => {
+          const activeId = initialTabId;
+          const failedTab = createBrowserTabState({
+            id: activeId,
+            title: null,
+            urlInput: presentBrowserUrl(next),
+            sessionId: null,
+            embeddedPreview: null,
+            snapshot: null,
+            liveState: null,
+            liveError: message,
+            loading: false,
+          });
+          if (prev.some((tab) => tab.id === activeId)) {
+            return prev.map((tab) => (tab.id === activeId ? failedTab : tab));
+          }
+          return [...prev, failedTab];
+        });
+      }
+      return false;
     } finally {
-      setBrowserLoading(false);
+      if (isCurrentNavigation()) {
+        setBrowserLoading(false);
+      }
     }
   }
 
@@ -2707,7 +2872,7 @@ export function Files({
     setBrowserLoadError(null);
     setBrowserLoading(true);
     try {
-      const snapshot = await invoke<BrowserSnapshot>("browser_back", { sessionId: browserSessionId });
+      const snapshot = await invokeBrowserCommand<BrowserSnapshot>("browser_back", { sessionId: browserSessionId });
       setBrowserSnapshot(snapshot);
       setBrowserUrlInput(presentBrowserUrl(snapshot.url));
     } catch (e) {
@@ -2730,7 +2895,7 @@ export function Files({
     setBrowserLoadError(null);
     setBrowserLoading(true);
     try {
-      const snapshot = await invoke<BrowserSnapshot>("browser_forward", { sessionId: browserSessionId });
+      const snapshot = await invokeBrowserCommand<BrowserSnapshot>("browser_forward", { sessionId: browserSessionId });
       setBrowserSnapshot(snapshot);
       setBrowserUrlInput(presentBrowserUrl(snapshot.url));
     } catch (e) {
@@ -2756,7 +2921,7 @@ export function Files({
     setBrowserLoadError(null);
     setBrowserLoading(true);
     try {
-      const snapshot = await invoke<BrowserSnapshot>("browser_reload", { sessionId: browserSessionId });
+      const snapshot = await invokeBrowserCommand<BrowserSnapshot>("browser_reload", { sessionId: browserSessionId });
       setBrowserSnapshot(snapshot);
       setBrowserUrlInput(presentBrowserUrl(snapshot.url));
     } catch (e) {
@@ -2773,7 +2938,7 @@ export function Files({
     setBrowserLoadError(null);
     setBrowserClickingId(element.id);
     try {
-      const snapshot = await invoke<BrowserSnapshot>("browser_click", {
+      const snapshot = await invokeBrowserCommand<BrowserSnapshot>("browser_click", {
         sessionId: browserSessionId,
         x: element.x + element.width / 2,
         y: element.y + element.height / 2,
@@ -2794,7 +2959,7 @@ export function Files({
     setBrowserLoadError(null);
     setBrowserClickingId("__snapshot__");
     try {
-      const snapshot = await invoke<BrowserSnapshot>("browser_click", {
+      const snapshot = await invokeBrowserCommand<BrowserSnapshot>("browser_click", {
         sessionId: browserSessionId,
         x: point.x,
         y: point.y,
@@ -2831,7 +2996,7 @@ export function Files({
     setBrowserLoadError(null);
     for (const sessionId of sessionIds) {
       try {
-        await invoke("browser_session_close", { sessionId });
+        await invokeBrowserCommand<void>("browser_session_close", { sessionId });
       } catch {
         // Ignore close errors; session cleanup is best-effort.
       }
@@ -3259,21 +3424,74 @@ export function Files({
   }
 
   async function openBrowserUrlInDesktop(targetUrl: string) {
+    if (activeBrowserOpenRef.current) {
+      await activeBrowserOpenRef.current.catch(() => {});
+    }
+    const task = openBrowserUrlInDesktopInner(targetUrl);
+    activeBrowserOpenRef.current = task;
+    try {
+      await task;
+    } finally {
+      if (activeBrowserOpenRef.current === task) {
+        activeBrowserOpenRef.current = null;
+      }
+    }
+  }
+
+  async function openBrowserUrlInDesktopInner(targetUrl: string) {
+    clientLog("browser.open_url.start", { url: targetUrl });
     if (!browserOpen) {
       setBrowserOpen(true);
     }
     focusWindow("browser");
+    const targetTab = createBrowserTabState({
+      title: null,
+      urlInput: presentBrowserUrl(targetUrl),
+      sessionId: null,
+      embeddedPreview: null,
+      snapshot: null,
+      liveState: null,
+      liveError: null,
+      loading: true,
+    });
+    const committedTabs = commitActiveBrowserTabState(browserTabs);
+    const parkedTabs = committedTabs.map((tab) => (
+      tab.sessionId ? { ...tab, sessionId: null, liveState: null, loading: false } : tab
+    ));
+    setBrowserTabs([...parkedTabs, targetTab]);
+    setActiveBrowserTabId(targetTab.id);
     if (isTrustedLocalPreviewUrl(targetUrl)) {
+      const previewTab = createBrowserTabState({
+        id: targetTab.id,
+        title: "Entropic Preview",
+        urlInput: presentBrowserUrl(targetUrl),
+        sessionId: null,
+        embeddedPreview: { url: targetUrl, title: "Entropic Preview" },
+        loading: false,
+      });
+      setBrowserTabs([...parkedTabs, previewTab]);
       setBrowserEmbeddedPreview((prev) => ({
         url: targetUrl,
         title: prev?.title ?? "Entropic Preview",
       }));
       setBrowserUrlInput(presentBrowserUrl(targetUrl));
       setBrowserLoadError(null);
+      clientLog("browser.open_url.done", { url: targetUrl, success: true });
       return;
     }
+    closeBrowserLiveSocket();
+    resetBrowserLiveFrame();
+    setBrowserLiveState(null);
+    setBrowserLiveConnected(false);
+    setBrowserLiveError(null);
+    setBrowserSnapshot(null);
+    setBrowserEmbeddedPreview(null);
+    const reusableSessionId = browserSessionId;
+    setBrowserSessionId(reusableSessionId ?? null);
     setBrowserUrlInput(presentBrowserUrl(targetUrl));
-    await navigateBrowser(targetUrl);
+    setBrowserLoadError(null);
+    const success = await navigateBrowser(targetUrl, { sessionId: reusableSessionId ?? null, tabId: targetTab.id });
+    clientLog("browser.open_url.done", { url: targetUrl, success });
   }
 
   function consumeDesktopHandoff(): DesktopHandoff | null {
@@ -3293,6 +3511,8 @@ export function Files({
       case "ignore":
         return;
       case "open_browser_url":
+        clientLog("desktop_handoff.open_browser_url", { url: resolution.url });
+        setChatOpen(false);
         await openBrowserUrlInDesktop(resolution.url);
         return;
       case "open_workspace_in_browser":
@@ -3532,12 +3752,14 @@ export function Files({
   desktopActionHandlerRef.current = runDesktopAction;
 
   useEffect(() => {
+    if (!desktopStateHydrated) return;
     if (!pendingDesktopAction) return;
     const handler = desktopActionHandlerRef.current;
     if (!handler) return;
     const { id, action } = pendingDesktopAction;
     if (handledDesktopActionIdsRef.current.has(id)) return;
     handledDesktopActionIdsRef.current.add(id);
+    onDesktopActionHandled?.(id);
     clientLog("desktop_action.replay", { id, type: action.type });
     void handler(action)
       .catch((error) => {
@@ -3549,9 +3771,8 @@ export function Files({
       })
       .finally(() => {
         clientLog("desktop_action.replay.done", { id });
-        onDesktopActionHandled?.(id);
       });
-  }, [pendingDesktopAction, onDesktopActionHandled]);
+  }, [desktopStateHydrated, pendingDesktopAction, onDesktopActionHandled]);
 
   function requestDesktopWindowFocus(window: WindowKey) {
     void runDesktopAction({ type: "focus_window", window });

@@ -2476,6 +2476,16 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
       gatewayHealthStatus: bootstrapState.gatewayHealthStatus,
       gatewayContainerRunning: bootstrapState.gatewayContainerRunning,
     });
+
+    function openChatLinkInDesktopBrowser(url: string) {
+      clientLog("chat.link.desktop_action_queued", { url });
+      setPendingDesktopAction({
+        id: crypto.randomUUID(),
+        action: { type: "open_browser_url", url },
+      });
+      setCurrentPage("files");
+    }
+
     return (
       <Chat
         isVisible={currentPage === "chat"}
@@ -2498,6 +2508,7 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
         integrationsSyncing={integrationsSyncing}
         integrationsMissing={integrationsMissing}
         onNavigate={setCurrentPage}
+        onBrowserLinkClick={openChatLinkInDesktopBrowser}
         onSessionsChange={(sessions, currentKey) => {
           setChatSessions((prev) => {
             // Guard against transient empty snapshots while chat state is still rehydrating.

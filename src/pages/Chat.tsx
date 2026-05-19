@@ -4056,7 +4056,7 @@ export function Chat({
   const shouldHoldConnectingScreen =
     !showOutOfCreditsModal &&
     Boolean(connectedProvider || proxyEnabled) &&
-    (gatewayStarting || isConnecting || connectInFlightRef.current || (gatewayRunning && !connected));
+    (gatewayStarting || (!gatewayRunning && (isConnecting || connectInFlightRef.current)));
 
   useEffect(() => {
     if (connectingScreenTimerRef.current !== null) {
@@ -7051,6 +7051,7 @@ export function Chat({
   }
 
   async function openChatLinkInBrowser(url: string) {
+    clientLog("chat.link.open_requested", { url, hasDirectBrowserHandler: Boolean(onBrowserLinkClick) });
     if (onBrowserLinkClick) {
       await onBrowserLinkClick(url);
       return;
@@ -8139,6 +8140,11 @@ export function Chat({
   if (localTrialLoading) return renderConnecting();
   if (!connectedProvider && !proxyEnabled) return renderNoProvider();
   const autoStartExpected = proxyEnabled && !gatewayRunning;
+  const showGatewayReconnectBanner =
+    gatewayRunning &&
+    !connected &&
+    Boolean(connectedProvider || proxyEnabled) &&
+    !showOutOfCreditsModal;
   const showGatewayWarmupBanner =
     gatewayStarting || autoStartExpected || (!gatewayRunning && !showGatewayOfflineCta);
   const showBillingAction = Boolean(error && isBillingIssueMessage(error));
@@ -8174,6 +8180,12 @@ export function Chat({
               : gatewayStarting || autoStartExpected
                 ? "Gateway starting…"
                 : "Preparing sandbox…")}
+        </div>
+      )}
+
+      {showGatewayReconnectBanner && (
+        <div className="p-2 text-center text-sm bg-amber-500/10 text-amber-500">
+          Connecting to your assistant — messages will send as soon as the connection is ready.
         </div>
       )}
 

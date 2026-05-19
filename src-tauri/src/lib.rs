@@ -303,6 +303,7 @@ pub fn run() {
             commands::browser_forward,
             commands::browser_click,
             commands::browser_session_close,
+            commands::browser_sessions_close_all,
             commands::desktop_terminal_create,
             commands::desktop_terminal_snapshot,
             commands::desktop_terminal_write,

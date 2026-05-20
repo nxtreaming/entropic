@@ -11164,7 +11164,7 @@ Use it for durable decisions, preferences, and facts that should persist across 
     }
 
     // Ensure optional plugin tools are allowed without restricting core tools.
-    const ENTROPIC_INTEGRATION_TOOLS: [&str; 13] = [
+    const ENTROPIC_INTEGRATION_TOOLS: [&str; 25] = [
         "calendar_list",
         "calendar_create",
         "gmail_search",
@@ -11178,6 +11178,18 @@ Use it for durable decisions, preferences, and facts that should persist across 
         "outlook_calendars_list",
         "outlook_events_list",
         "outlook_event_create",
+        "onedrive_items_list",
+        "onedrive_items_search",
+        "onedrive_item_resolve_path",
+        "onedrive_item_get",
+        "onedrive_item_content_get",
+        "onedrive_item_download",
+        "onedrive_item_share",
+        "onedrive_folder_create",
+        "onedrive_text_file_upload",
+        "onedrive_base64_file_upload",
+        "onedrive_docx_create",
+        "onedrive_item_move",
     ];
     const ENTROPIC_X_TOOLS: [&str; 4] = ["x_search", "x_profile", "x_thread", "x_user_tweets"];
     const ENTROPIC_CORE_TOOLS: [&str; 1] = ["image"];

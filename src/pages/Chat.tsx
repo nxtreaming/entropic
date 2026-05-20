@@ -22,6 +22,8 @@ import {
   Puzzle,
   User,
   FileText,
+  FileSpreadsheet,
+  Presentation,
   Music2,
   Mic,
   Square,
@@ -345,6 +347,28 @@ function normalizeChatWorkspacePath(raw: string): string | null {
 function workspacePathName(path: string): string {
   const parts = path.split("/").filter(Boolean);
   return parts[parts.length - 1] || "Workspace";
+}
+
+function workspacePathExtension(path: string): string {
+  return workspacePathName(path).split(".").pop()?.toLowerCase() || "";
+}
+
+function officeWorkspaceFileMeta(path: string):
+  | { kind: "docs"; label: "Docs"; Icon: ComponentType<{ className?: string }>; accent: string }
+  | { kind: "sheets"; label: "Sheets"; Icon: ComponentType<{ className?: string }>; accent: string }
+  | { kind: "slides"; label: "Slides"; Icon: ComponentType<{ className?: string }>; accent: string }
+  | null {
+  const ext = workspacePathExtension(path);
+  if (ext === "docx") {
+    return { kind: "docs", label: "Docs", Icon: FileText, accent: "#2563EB" };
+  }
+  if (ext === "xlsx") {
+    return { kind: "sheets", label: "Sheets", Icon: FileSpreadsheet, accent: "#16A34A" };
+  }
+  if (ext === "pptx") {
+    return { kind: "slides", label: "Slides", Icon: Presentation, accent: "#EA580C" };
+  }
+  return null;
 }
 
 function isTransientGatewayConnectCloseMessage(raw?: string | null): boolean {
@@ -1825,6 +1849,14 @@ function hasExplicitGmailIntent(raw: string): boolean {
 
 function hasExplicitOutlookIntent(raw: string): boolean {
   return parseOutlookIntent(raw);
+}
+
+function parseOneDriveIntent(raw: string): boolean {
+  const text = raw.trim().toLowerCase();
+  if (!text) return false;
+  const mentionsOneDrive = /\b(?:one\s*drive|onedrive)\b/.test(text);
+  if (!mentionsOneDrive) return false;
+  return /\b(?:upload|save|send|copy|move|create|make|write|put|list|search|find|download|share|folder|file|files|docx|xlsx|pptx|document|spreadsheet|presentation)\b/.test(text);
 }
 
 function parseGenericEmailIntent(raw: string): boolean {
@@ -6192,8 +6224,47 @@ export function Chat({
       addDiag(`x intent detected; routing via X integration topic=${xIntent.topic ? "yes" : "no"}`);
     }
 
+    const oneDriveIntent =
+      !xIntent &&
+      shouldCheckXIntent &&
+      parseOneDriveIntent(messageContent);
+    if (oneDriveIntent && sendSession) {
+      try {
+        const connectedNow = await isIntegrationReady("onedrive");
+        if (!connectedNow) {
+          addDiag("onedrive intent detected; OneDrive integration not connected");
+          appendAssistantNotice(
+            "I can do that with OneDrive, but it is not connected yet. Connect OneDrive in Integrations, then try again.",
+            sendSession
+          );
+          setIsLoading(false);
+          setActiveWorkSessionKey(null);
+          setThinkingStatus(null);
+          return;
+        }
+      } catch {
+        appendAssistantNotice("Failed to check OneDrive integration status.", sendSession);
+        setIsLoading(false);
+        setActiveWorkSessionKey(null);
+        setThinkingStatus(null);
+        return;
+      }
+
+      outboundMessageContent = [
+        "Use the connected OneDrive integration for this request.",
+        "Use only OneDrive tools for this request. Do not call Google Drive, Google Docs, Google Sheets, Outlook, Gmail, or local Office workflow tools unless the user explicitly asks for them.",
+        "Available OneDrive tools: `onedrive_items_list`, `onedrive_items_search`, `onedrive_item_resolve_path`, `onedrive_item_get`, `onedrive_item_content_get`, `onedrive_item_download`, `onedrive_item_share`, `onedrive_folder_create`, `onedrive_text_file_upload`, `onedrive_base64_file_upload`, `onedrive_docx_create`, and `onedrive_item_move`.",
+        "For uploading an existing local workspace file, read the file bytes from `/data/workspace`, base64-encode them, then call `onedrive_base64_file_upload` with the original filename. For creating a Word document directly from text, use `onedrive_docx_create`.",
+        "If the user mentions a OneDrive folder path, resolve or create the folder first, then pass its item id as `parentItemId`.",
+        "After a successful upload, report the OneDrive item name and any web/share link returned by the tool.",
+        `Original user request: ${messageContent.trim()}`,
+      ].join("\n");
+      addDiag("onedrive intent detected; routing via OneDrive integration");
+    }
+
     const workspaceOfficeIntent =
       !xIntent &&
+      !oneDriveIntent &&
       !hasAttachments &&
       !messageContent.startsWith(INTERNAL_USER_PROMPT_PREFIX) &&
       shouldRouteWorkspaceOfficeRequest(messageContent);
@@ -6211,6 +6282,7 @@ export function Chat({
     let genericEmailProvider: "gmail" | "outlook" | null = null;
     if (
       !xIntent &&
+      !oneDriveIntent &&
       !workspaceOfficeIntent &&
       shouldCheckXIntent &&
       !explicitOutlookIntent &&
@@ -6243,6 +6315,7 @@ export function Chat({
 
     const outlookIntent =
       !xIntent &&
+      !oneDriveIntent &&
       !workspaceOfficeIntent &&
       shouldCheckXIntent &&
       (explicitOutlookIntent || genericEmailProvider === "outlook");
@@ -6282,6 +6355,7 @@ export function Chat({
 
     const gmailIntent =
       !xIntent &&
+      !oneDriveIntent &&
       !workspaceOfficeIntent &&
       !outlookIntent &&
       shouldCheckXIntent &&
@@ -7172,6 +7246,61 @@ export function Chat({
     });
   }
 
+  function renderOfficeWorkspaceOpenCards(content: string) {
+    const officeRefs = extractWorkspaceChatReferences(content)
+      .map((ref) => ({ ref, meta: officeWorkspaceFileMeta(ref.path) }))
+      .filter((item): item is { ref: WorkspaceChatReference; meta: NonNullable<ReturnType<typeof officeWorkspaceFileMeta>> } =>
+        Boolean(item.meta)
+      );
+    if (officeRefs.length === 0) return null;
+
+    return (
+      <div className="mt-3 space-y-2">
+        {officeRefs.map(({ ref, meta }) => {
+          const Icon = meta.Icon;
+          return (
+            <div
+              key={`office-open-${ref.key}`}
+              className="flex min-w-0 items-center gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-tertiary)]/75 px-3 py-3"
+            >
+              <div
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[var(--bg-card)] shadow-sm"
+                style={{ color: meta.accent }}
+                aria-hidden="true"
+              >
+                <Icon className="h-6 w-6" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium text-[var(--text-primary)]" title={ref.name}>
+                  {ref.name}
+                </div>
+                <div className="mt-0.5 text-xs text-[var(--text-secondary)]">
+                  Do you want to open it in {meta.label}?
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  void handoffWorkspacePathToDesktop({
+                    path: ref.path,
+                    action: "open",
+                    looksLikeFile: true,
+                  });
+                }}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-[var(--text-primary)] px-3 py-2 text-xs font-medium text-[var(--bg-primary)] shadow-sm transition-transform hover:-translate-y-px"
+                title={`Open ${ref.name}`}
+                aria-label={`Open ${ref.name}`}
+              >
+                <Icon className="h-3.5 w-3.5" />
+                <span>Open</span>
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
   async function saveGeneratedImageToWorkspace(
     message: Message,
     attachment: MessageAttachment,
@@ -7489,6 +7618,7 @@ export function Chat({
                 void openChatLinkInBrowser(url);
               }}
             />
+            {renderOfficeWorkspaceOpenCards(payload.cleanText)}
             {approvalCommand ? (
               <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-tertiary)]/70 p-3">
                 <div className="min-w-0 flex-1">

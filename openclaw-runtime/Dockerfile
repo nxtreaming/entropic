@@ -110,8 +110,10 @@ RUN EXT_DEPS="$(tr '\n' ' ' </app/all-extension-runtime-deps.txt)" && \
 
 # Telegram and other bundled channel plugins use the public plugin runtime
 # config facade. Fail the image build if the bundled OpenClaw dist regresses
-# that compatibility API instead of publishing a runtime that crashes on boot.
-RUN node --input-type=module -e "const { createPluginRuntime } = await import('file:///app/dist/plugins/runtime/index.js'); const runtime = createPluginRuntime(); if (typeof runtime?.config?.getRuntimeConfig !== 'function') throw new Error('OpenClaw plugin runtime is missing config.getRuntimeConfig');"
+# that API instead of publishing a runtime that crashes on boot. Newer
+# OpenClaw builds expose config.current; compatibility builds expose
+# config.getRuntimeConfig; older builds expose config.loadConfig.
+RUN node --input-type=module -e "const { createPluginRuntime } = await import('file:///app/dist/plugins/runtime/index.js'); const runtime = createPluginRuntime(); const readConfig = runtime?.config?.getRuntimeConfig ?? runtime?.config?.current ?? runtime?.config?.loadConfig; if (typeof readConfig !== 'function') throw new Error('OpenClaw plugin runtime is missing config.current/getRuntimeConfig/loadConfig');"
 
 # OpenClaw v2026.5.5's bundled Telegram channel calls the old top-level
 # runtime.getRuntimeConfig facade from the message-context path. The runtime now
@@ -125,7 +127,7 @@ const distDir = "/app/dist";
 const from =
   "runtime?.getRuntimeConfig ?? (await loadTelegramMessageContextRuntime()).getRuntimeConfig";
 const to =
-  "runtime?.config?.getRuntimeConfig ?? runtime?.config?.current ?? (await loadTelegramMessageContextRuntime()).getRuntimeConfig";
+  "runtime?.config?.getRuntimeConfig ?? runtime?.config?.current ?? runtime?.config?.loadConfig ?? (await loadTelegramMessageContextRuntime()).getRuntimeConfig";
 
 function walkJs(dir) {
   const out = [];

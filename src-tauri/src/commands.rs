@@ -15730,7 +15730,12 @@ const path=require('path');
   try {
     const runtime = await import('file:///app/dist/plugins/runtime/index.js');
     const pluginRuntime = runtime.createPluginRuntime?.();
-    runtimeConfigApiCompatible = typeof pluginRuntime?.config?.getRuntimeConfig === 'function';
+    runtimeConfigApiCompatible =
+      typeof (
+        pluginRuntime?.config?.getRuntimeConfig ??
+        pluginRuntime?.config?.current ??
+        pluginRuntime?.config?.loadConfig
+      ) === 'function';
   } catch {}
 
   process.stdout.write(JSON.stringify({

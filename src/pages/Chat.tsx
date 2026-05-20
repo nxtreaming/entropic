@@ -6688,6 +6688,38 @@ export function Chat({
     return Boolean(entry && entry.connected && !entry.stale);
   }
 
+  async function refreshHomeIntegrationLaunch(
+    sessionKey: string,
+    launch: Pick<IntegrationLaunchState, "provider" | "name">
+  ): Promise<boolean> {
+    const integrations = await getIntegrations({ force: true });
+    const entry = integrations.find((item) => item.provider === launch.provider);
+    const connectedNow = Boolean(entry && entry.connected && !entry.stale);
+    if (!connectedNow) return false;
+
+    setIntegrationLaunchBySession((prev) => {
+      const current = prev[sessionKey];
+      if (!current || current.provider !== launch.provider) return prev;
+      return {
+        ...prev,
+        [sessionKey]: {
+          provider: current.provider,
+          name: current.name || launch.name,
+          status: "ready",
+          error: null,
+        },
+      };
+    });
+    syncAllIntegrationsToGateway().then(
+      (providers) => addDiag(`integrations synced after launcher connect: ${providers.join(", ") || "none"}`),
+      (err) => addDiag(`integration sync after launcher connect failed: ${err instanceof Error ? err.message : String(err)}`)
+    );
+    if (currentSessionRef.current === sessionKey) {
+      requestAnimationFrame(() => textareaRef.current?.focus());
+    }
+    return true;
+  }
+
   async function connectHomeIntegration(
     sessionKey: string,
     integration: typeof HOME_PRIMARY_INTEGRATIONS[number],
@@ -6762,6 +6794,40 @@ export function Chat({
       });
     }
   }
+
+  useEffect(() => {
+    if (!currentSession || !integrationLaunch || integrationLaunch.status !== "connecting") return;
+    let cancelled = false;
+    const sessionKey = currentSession;
+    const launch = {
+      provider: integrationLaunch.provider,
+      name: integrationLaunch.name,
+    };
+
+    const checkLaunchConnection = () => {
+      refreshHomeIntegrationLaunch(sessionKey, launch).catch((err) => {
+        if (!cancelled) {
+          addDiag(`launcher integration status check failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      });
+    };
+    const checkWhenVisible = () => {
+      if (document.visibilityState === "visible") checkLaunchConnection();
+    };
+
+    checkLaunchConnection();
+    const interval = window.setInterval(checkLaunchConnection, 3000);
+    window.addEventListener("focus", checkLaunchConnection);
+    window.addEventListener("entropic-integration-updated", checkLaunchConnection);
+    document.addEventListener("visibilitychange", checkWhenVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", checkLaunchConnection);
+      window.removeEventListener("entropic-integration-updated", checkLaunchConnection);
+      document.removeEventListener("visibilitychange", checkWhenVisible);
+    };
+  }, [currentSession, integrationLaunch?.provider, integrationLaunch?.status]);
 
   function openQuickSuggestion(action: AgentQuickActionDefinition, sessionKeyInput?: string) {
     const sessionKey = sessionKeyInput || ensureComposerSession();

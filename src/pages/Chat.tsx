@@ -481,6 +481,17 @@ type ChatToolActivity = {
   ts: number;
 };
 
+function extractApprovalCommand(text: string): string | null {
+  const match = text.match(/(?:^|\n|\s)(\/approve\s+[A-Za-z0-9_-]+\s+(?:allow-once|allow-always|deny))(?:\s|$)/i);
+  return match?.[1]?.trim() ?? null;
+}
+
+function approvalCommandLabel(command: string): string {
+  if (/\ballow-always\b/i.test(command)) return "Approve always";
+  if (/\bdeny\b/i.test(command)) return "Deny";
+  return "Approve once";
+}
+
 const SETTINGS_PROFILE_REQUEST_EVENT = "entropic-settings-open-profile";
 const SETTINGS_PROFILE_REQUEST_KEY = "entropic.settings.requestedSection";
 
@@ -1887,6 +1898,7 @@ export function Chat({
   const [toolActivityByRunId, setToolActivityByRunId] = useState<Record<string, ChatToolActivity[]>>({});
   const [activeToolRunId, setActiveToolRunId] = useState<string | null>(null);
   const [cancelInFlight, setCancelInFlight] = useState(false);
+  const [approvalCommandInFlight, setApprovalCommandInFlight] = useState<string | null>(null);
   const [loadingWordIndex, setLoadingWordIndex] = useState(() => randomThinkingWordIndex());
   const [loadingWordChanging, setLoadingWordChanging] = useState(false);
   const [dragActive, setDragActive] = useState(false);
@@ -5619,6 +5631,59 @@ export function Chat({
     return runId;
   }
 
+  async function approveOperatorCommand(command: string) {
+    const normalizedCommand = command.trim();
+    if (!normalizedCommand) return;
+    const sendSession = currentSessionRef.current || currentSession;
+    if (!sendSession) {
+      setError("Open a chat before approving a command.");
+      return;
+    }
+    const liveClient = clientRef.current;
+    if (!liveClient || !liveClient.isConnected()) {
+      setError("Gateway is still connecting. Try approving again in a moment.");
+      if (!connectInFlightRef.current) {
+        void connectToGateway();
+      }
+      return;
+    }
+
+    setApprovalCommandInFlight(normalizedCommand);
+    setError(null);
+    setThinkingStatus("Approving command");
+    appendLocalMessage(
+      {
+        id: crypto.randomUUID(),
+        role: "user",
+        content: normalizedCommand,
+        sentAt: Date.now(),
+      },
+      sendSession,
+    );
+
+    try {
+      const startedAt = Date.now();
+      const runId = await liveClient.sendMessage(
+        sendSession,
+        normalizedCommand,
+        [],
+        crypto.randomUUID(),
+      );
+      if (runId) {
+        scheduleActiveRunTimeout(runId, sendSession);
+        runTimingsRef.current[runId] = { startedAt, ackAt: Date.now() };
+      }
+      setIsLoading(true);
+      setActiveWorkSessionKey(sendSession);
+      setThinkingStatus("Continuing");
+    } catch (e) {
+      setError(formatUnknownUiError(e, "Approval failed."));
+      setThinkingStatus(null);
+    } finally {
+      setApprovalCommandInFlight(null);
+    }
+  }
+
   async function replayOutboxEntry(entry: PersistedPendingSend) {
     if (outboxReplayInFlightRef.current) {
       return;
@@ -7369,6 +7434,7 @@ export function Chat({
         : []),
     ];
     const activities = [...liveActivities, ...payloadActivities];
+    const approvalCommand = payload.cleanText ? extractApprovalCommand(payload.cleanText) : null;
     return (
       <div className="min-w-0 max-w-full space-y-3">
         {renderToolActivityList(activities)}
@@ -7382,6 +7448,29 @@ export function Chat({
                 void openChatLinkInBrowser(url);
               }}
             />
+            {approvalCommand ? (
+              <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-tertiary)]/70 p-3">
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium text-[var(--text-primary)]">Command approval requested</div>
+                  <div className="mt-0.5 truncate font-mono text-xs text-[var(--text-tertiary)]" title={approvalCommand}>
+                    {approvalCommand}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void approveOperatorCommand(approvalCommand)}
+                  disabled={approvalCommandInFlight === approvalCommand}
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-black px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-black/85 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {approvalCommandInFlight === approvalCommand ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Check className="h-3.5 w-3.5" />
+                  )}
+                  <span>{approvalCommandLabel(approvalCommand)}</span>
+                </button>
+              </div>
+            ) : null}
           </div>
         ) : null}
         {!payload.cleanText ? renderMessageAttachments(message) : null}

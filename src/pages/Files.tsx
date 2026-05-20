@@ -1059,10 +1059,14 @@ export function Files({
   const [createFileName, setCreateFileName] = useState("");
   const [createFileBasePath, setCreateFileBasePath] = useState("");
   const [creatingFile, setCreatingFile] = useState(false);
+  const [renameEntry, setRenameEntry] = useState<WorkspaceFileEntry | null>(null);
+  const [renameName, setRenameName] = useState("");
+  const [renamingEntry, setRenamingEntry] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const createFolderInputRef = useRef<HTMLInputElement>(null);
   const createFileInputRef = useRef<HTMLInputElement>(null);
+  const renameInputRef = useRef<HTMLInputElement>(null);
   const filesFetchSeqRef = useRef(0);
   const filesLoadingSeqRef = useRef(0);
   const desktopEntriesFetchSeqRef = useRef(0);
@@ -3859,6 +3863,12 @@ export function Files({
     catch (e) { setError(`Delete failed: ${e instanceof Error ? e.message : String(e)}`); }
   }
 
+  function handleRename(entry: WorkspaceFileEntry) {
+    setRenameEntry(entry);
+    setRenameName(entry.name);
+    setContextMenu(null);
+  }
+
   function handleCreateFolder(basePath?: string) {
     const root = typeof basePath === "string" ? basePath : currentPath;
     setCreateFolderBasePath(root);
@@ -3886,6 +3896,58 @@ export function Files({
     const id = window.setTimeout(() => createFileInputRef.current?.focus(), 0);
     return () => window.clearTimeout(id);
   }, [createFileOpen]);
+
+  useEffect(() => {
+    if (!renameEntry) return;
+    const id = window.setTimeout(() => {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [renameEntry]);
+
+  async function submitRenameEntry() {
+    if (!renameEntry || renamingEntry) return;
+    const trimmedName = renameName.trim();
+    if (!trimmedName || trimmedName === renameEntry.name) {
+      setRenameEntry(null);
+      setRenameName("");
+      return;
+    }
+    const previousPath = renameEntry.path;
+    const previousIconId = desktopIconIdForPath(previousPath);
+    setRenamingEntry(true);
+    setError(null);
+    try {
+      const renamed = await invoke<WorkspaceFileEntry>("rename_workspace_file", {
+        path: previousPath,
+        name: trimmedName,
+      });
+      const nextIconId = desktopIconIdForPath(renamed.path);
+      setRenameEntry(null);
+      setRenameName("");
+      setSelected(renamed.path);
+      setDesktopIcons((prev) => {
+        const existing = prev[previousIconId];
+        if (!existing || previousIconId === nextIconId) return prev;
+        const next = { ...prev };
+        delete next[previousIconId];
+        next[nextIconId] = { ...existing, id: nextIconId };
+        return next;
+      });
+      setPreview((current) => (
+        current && current.path === previousPath
+          ? { ...current, name: renamed.name, path: renamed.path }
+          : current
+      ));
+      void fetchDesktopEntries();
+      if (finderOpen) await fetchFiles(currentPath);
+    } catch (e) {
+      setError(`Rename failed: ${describeError(e)}`);
+    } finally {
+      setRenamingEntry(false);
+    }
+  }
 
   async function submitCreateFolder() {
     const trimmedName = createFolderName.trim();
@@ -4594,6 +4656,7 @@ export function Files({
             onQuickLook={handleView}
             onExport={exportWorkspaceEntry}
             onCopyPath={copyDesktopPath}
+            onRename={handleRename}
             onDelete={handleDelete}
             canOpenInBrowser={workspaceFileCanOpenInBrowser}
           />
@@ -4663,6 +4726,28 @@ export function Files({
             onValueChange={setCreateFileName}
             onCancel={() => setCreateFileOpen(false)}
             onSubmit={submitCreateFile}
+          />
+
+          <CreateWorkspaceEntryModal
+            kind={renameEntry?.is_directory ? "folder" : "file"}
+            open={renameEntry !== null}
+            basePath={renameEntry ? workspacePathParent(renameEntry.path) : ""}
+            value={renameName}
+            busy={renamingEntry}
+            inputRef={renameInputRef}
+            zIndex={DESKTOP_MODAL_Z}
+            placeholder={renameEntry?.name || "Name"}
+            title="Rename"
+            locationLabel={renameEntry ? `Rename ${renameEntry.name}` : "Rename item"}
+            submitLabel="Rename"
+            busyLabel="Renaming..."
+            onValueChange={setRenameName}
+            onCancel={() => {
+              if (renamingEntry) return;
+              setRenameEntry(null);
+              setRenameName("");
+            }}
+            onSubmit={submitRenameEntry}
           />
 
           {chatOpen && (

@@ -9,6 +9,10 @@ type CreateWorkspaceEntryModalProps = {
   inputRef: RefObject<HTMLInputElement>;
   zIndex: number;
   placeholder: string;
+  title?: string;
+  locationLabel?: string;
+  submitLabel?: string;
+  busyLabel?: string;
   helperText?: string;
   onValueChange: (value: string) => void;
   onCancel: () => void;
@@ -24,6 +28,10 @@ export function CreateWorkspaceEntryModal({
   inputRef,
   zIndex,
   placeholder,
+  title,
+  locationLabel,
+  submitLabel,
+  busyLabel,
   helperText,
   onValueChange,
   onCancel,
@@ -31,7 +39,10 @@ export function CreateWorkspaceEntryModal({
 }: CreateWorkspaceEntryModalProps) {
   if (!open) return null;
 
-  const label = kind === "file" ? "New File" : "New Folder";
+  const label = title || (kind === "file" ? "New File" : "New Folder");
+  const location = locationLabel || (basePath ? `Create inside ${basePath}` : "Create in Workspace");
+  const submitText = submitLabel || "Create";
+  const busyText = busyLabel || "Creating...";
 
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
     if (event.key === "Enter") {
@@ -65,7 +76,7 @@ export function CreateWorkspaceEntryModal({
             {label}
           </p>
           <p className="mt-1 text-xs" style={{ color: "#9a9a9a" }}>
-            {basePath ? `Create inside ${basePath}` : "Create in Workspace"}
+            {location}
           </p>
         </div>
         <input
@@ -107,7 +118,7 @@ export function CreateWorkspaceEntryModal({
             className="rounded-lg px-3 py-1.5 text-xs font-medium disabled:opacity-50"
             style={{ background: "#54a3f7", color: "#fff" }}
           >
-            {busy ? "Creating..." : "Create"}
+            {busy ? busyText : submitText}
           </button>
         </div>
       </div>

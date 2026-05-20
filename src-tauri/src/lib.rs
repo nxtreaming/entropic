@@ -328,6 +328,7 @@ pub fn run() {
             commands::read_workspace_file,
             commands::read_workspace_file_base64,
             commands::delete_workspace_file,
+            commands::rename_workspace_file,
             commands::upload_workspace_file,
             commands::upload_host_dropped_files,
             commands::export_workspace_file,

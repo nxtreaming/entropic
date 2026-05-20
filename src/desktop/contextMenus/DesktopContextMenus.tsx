@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ArrowUp, Eye, FileText, Folder, Globe, Image, Plus, Terminal, Trash2 } from "lucide-react";
+import { ArrowUp, Eye, FilePenLine, FileText, Folder, Globe, Image, Plus, Terminal, Trash2 } from "lucide-react";
 
 export type DesktopContextMenuEntry = {
   name: string;
@@ -34,6 +34,7 @@ type DesktopContextMenusProps = {
   onQuickLook: (entry: DesktopContextMenuEntry) => void;
   onExport: (entry: DesktopContextMenuEntry) => void | Promise<void>;
   onCopyPath: (path: string) => void | Promise<void>;
+  onRename: (entry: DesktopContextMenuEntry) => void;
   onDelete: (entry: DesktopContextMenuEntry) => void;
   canOpenInBrowser: (path: string) => boolean;
 };
@@ -90,6 +91,7 @@ export function DesktopContextMenus({
   onQuickLook,
   onExport,
   onCopyPath,
+  onRename,
   onDelete,
   canOpenInBrowser,
 }: DesktopContextMenusProps) {
@@ -185,6 +187,10 @@ export function DesktopContextMenus({
       <MenuButton onClick={() => closeAfter(() => onCopyPath(entry.path))}>
         <FileText className="h-3.5 w-3.5" style={{ color: "#888" }} />
         Copy Path
+      </MenuButton>
+      <MenuButton onClick={() => closeAfter(() => onRename(entry))}>
+        <FilePenLine className="h-3.5 w-3.5" style={{ color: "#888" }} />
+        Rename
       </MenuButton>
       <div className="my-1 border-t border-white/[0.08]" />
       <MenuButton danger onClick={() => closeAfter(() => onDelete(entry))}>

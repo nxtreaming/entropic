@@ -8534,10 +8534,7 @@ fn resolve_managed_plugin_id(primary: &'static str, legacy: &'static str) -> Opt
 }
 
 fn build_tools_markdown(capabilities: &[CapabilityState]) -> String {
-    let proxy_mode = read_container_env("ENTROPIC_PROXY_MODE").is_some();
-    let web_search_available = !proxy_mode
-        && capability_enabled(capabilities, "web", true)
-        && container_plugin_exists("duckduckgo");
+    let web_search_available = capability_enabled(capabilities, "web", true);
     let browser_tool_available = capability_enabled(capabilities, "browser", true)
         && container_loadable_gateway_plugin_exists("browser");
     let patchright_browser_available = capability_enabled(capabilities, "browser", true)
@@ -8557,9 +8554,20 @@ fn build_tools_markdown(capabilities: &[CapabilityState]) -> String {
     if web_search_available {
         body.push_str("\n## Current Information\n");
         body.push_str(
-            "- Use `web_search` for live or current information such as weather, news, prices, scores, and web lookups.\n",
+            "- Use `web_search` first for live or current information such as weather, news, prices, scores, and web lookups.\n",
         );
-        body.push_str("- If a user asks for current information, call `web_search` first.\n");
+        body.push_str(
+            "- For `web_search`, pass only the search query and an optional small result count. Do not set country, language, freshness/date filters, domain filters, max_tokens, or max_tokens_per_page unless a tool result explicitly says the active provider supports that field.\n",
+        );
+        body.push_str(
+            "- If search results only provide source links or snippets, call `web_fetch` on the most relevant result URL and answer from fetched page content instead of giving the user a list of links.\n",
+        );
+        body.push_str(
+            "- For current weather, use `web_search` to find a reliable local/NWS/weather result, then use `web_fetch` to extract the current temperature, conditions, wind, precipitation, and timestamp when available.\n",
+        );
+        body.push_str(
+            "- Use the `browser` tool only when `web_search` and `web_fetch` cannot retrieve enough content. Do not read browser skill files or paths under `~/.openclaw`; if `browser` is available, call the `browser` tool directly.\n",
+        );
     } else if browser_tool_available {
         body.push_str("\n## Current Information\n");
         body.push_str(
@@ -8569,7 +8577,10 @@ fn build_tools_markdown(capabilities: &[CapabilityState]) -> String {
             "- Use the `browser` tool with actions such as `open`, `navigate`, and `snapshot`; for example open `https://www.weather.gov/` or a search/weather page, then snapshot it and answer from the page.\n",
         );
         body.push_str(
-            "- If `browser` fails with a strict SSRF/IP-literal/hostname navigation block for a public HTTPS site, use `exec` with a simple network command such as `curl -L --max-time 20 <url>` as the fallback lookup path, then answer from that result.\n",
+            "- If the runtime still exposes `web_search` and browser lookup fails, you may call `web_search` with only the search query and an optional small result count. Do not set country, language, freshness/date filters, domain filters, max_tokens, or max_tokens_per_page.\n",
+        );
+        body.push_str(
+            "- Do not ask the user to approve shell/network commands for routine live lookups. If `browser` cannot fetch a live source, explain that the live lookup could not be executed from the available browser tool.\n",
         );
         body.push_str(
             "- Do not look for Patchright skill files under `~/.openclaw`, `/data/workspace/skills`, or `/data/skills`; those paths are not the browser tool. If `browser` is available, use `browser` directly.\n",
@@ -10953,14 +10964,38 @@ Use it for durable decisions, preferences, and facts that should persist across 
                     "models": models
                 }),
             );
-            // The managed runtime does not currently bundle a Perplexity web-search plugin,
-            // and newer OpenClaw rejects the legacy tools.web.search.perplexity key.
-            remove_openclaw_config_value(&mut cfg, &["tools", "web", "search"]);
+            if web_search_enabled {
+                set_openclaw_config_value(
+                    &mut cfg,
+                    &["tools", "web", "search", "enabled"],
+                    serde_json::json!(true),
+                );
+                set_openclaw_config_value(
+                    &mut cfg,
+                    &["tools", "web", "search", "provider"],
+                    serde_json::json!("duckduckgo"),
+                );
+                set_openclaw_config_value(
+                    &mut cfg,
+                    &["plugins", "entries", "duckduckgo", "enabled"],
+                    serde_json::json!(true),
+                );
+                set_openclaw_config_value(
+                    &mut cfg,
+                    &["tools", "web", "fetch", "enabled"],
+                    serde_json::json!(true),
+                );
+            } else {
+                remove_openclaw_config_value(&mut cfg, &["tools", "web", "search"]);
+                remove_openclaw_config_value(&mut cfg, &["tools", "web", "fetch"]);
+                remove_openclaw_config_value(
+                    &mut cfg,
+                    &["plugins", "entries", "duckduckgo", "config", "webSearch"],
+                );
+            }
+            // Newer OpenClaw rejects the legacy tools.web.search.perplexity key.
             remove_openclaw_config_value(&mut cfg, &["plugins", "entries", "perplexity"]);
-            remove_openclaw_config_value(
-                &mut cfg,
-                &["plugins", "entries", "duckduckgo", "config", "webSearch"],
-            );
+            remove_openclaw_config_value(&mut cfg, &["tools", "web", "search", "perplexity"]);
         }
     } else {
         let local_openrouter_model_id = model
@@ -11031,10 +11066,16 @@ Use it for durable decisions, preferences, and facts that should persist across 
                 &["plugins", "entries", "duckduckgo", "enabled"],
                 serde_json::json!(true),
             );
+            set_openclaw_config_value(
+                &mut cfg,
+                &["tools", "web", "fetch", "enabled"],
+                serde_json::json!(true),
+            );
             remove_openclaw_config_value(&mut cfg, &["tools", "web", "search", "perplexity"]);
             remove_openclaw_config_value(&mut cfg, &["plugins", "entries", "perplexity"]);
         } else {
             remove_openclaw_config_value(&mut cfg, &["tools", "web", "search"]);
+            remove_openclaw_config_value(&mut cfg, &["tools", "web", "fetch"]);
             remove_openclaw_config_value(&mut cfg, &["plugins", "entries", "perplexity"]);
             remove_openclaw_config_value(
                 &mut cfg,
@@ -11295,6 +11336,11 @@ Use it for durable decisions, preferences, and facts that should persist across 
             &mut cfg,
             &["plugins", "entries", "browser", "enabled"],
             serde_json::json!(browser_enabled),
+        );
+        set_openclaw_config_value(
+            &mut cfg,
+            &["browser", "noSandbox"],
+            serde_json::json!(true),
         );
         if browser_enabled {
             if bundled_plugin_entry_exists("browser") {
@@ -11947,9 +11993,9 @@ fn normalize_openclaw_config(cfg: &mut serde_json::Value) {
             "file_fetch",
             "dir_list",
             "dir_fetch",
-            "web_fetch",
         ],
     );
+    remove_openclaw_config_array_string(cfg, &["tools", "deny"], "web_fetch");
     for skill_id in DISABLED_NATIVE_SKILL_IDS {
         set_openclaw_config_value(
             cfg,
@@ -18048,6 +18094,71 @@ pub async fn delete_workspace_file(path: String) -> Result<(), String> {
     let full_path = format!("{}/{}", WORKSPACE_ROOT, sanitized);
     docker_exec_output(&["exec", container, "rm", "-rf", "--", &full_path])?;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn rename_workspace_file(
+    path: String,
+    name: String,
+) -> Result<WorkspaceFileEntry, String> {
+    let container = running_gateway_container_name()
+        .ok_or_else(|| "OpenClaw runtime is not running. Start the sandbox first.".to_string())?;
+    let sanitized = sanitize_workspace_path(&path)?;
+    if sanitized.is_empty() {
+        return Err("Cannot rename workspace root".to_string());
+    }
+
+    let source_path = format!("{}/{}", WORKSPACE_ROOT, sanitized);
+    if docker_exec_output(&["exec", container, "test", "-e", &source_path]).is_err() {
+        return Err("File or folder not found".to_string());
+    }
+
+    let is_directory = docker_exec_output(&["exec", container, "test", "-d", &source_path]).is_ok();
+    let sanitized_name = if is_directory {
+        sanitize_directory_name(&name)?
+    } else {
+        sanitize_file_name(&name)?
+    };
+    let parent_path = Path::new(&sanitized)
+        .parent()
+        .map(|parent| parent.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let relative_path = if parent_path.is_empty() {
+        sanitized_name.clone()
+    } else {
+        format!("{}/{}", parent_path, sanitized_name)
+    };
+
+    if relative_path == sanitized {
+        return Ok(WorkspaceFileEntry {
+            name: sanitized_name,
+            path: relative_path,
+            is_directory,
+            size: 0,
+            modified_at: 0,
+        });
+    }
+
+    let destination_path = format!("{}/{}", WORKSPACE_ROOT, relative_path);
+    if docker_exec_output(&["exec", container, "test", "-e", &destination_path]).is_ok() {
+        return Err("A file or folder with that name already exists.".to_string());
+    }
+
+    docker_exec_output(&[
+        "exec",
+        container,
+        "mv",
+        "--",
+        &source_path,
+        &destination_path,
+    ])?;
+    Ok(WorkspaceFileEntry {
+        name: sanitized_name,
+        path: relative_path,
+        is_directory,
+        size: 0,
+        modified_at: 0,
+    })
 }
 
 #[tauri::command]

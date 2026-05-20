@@ -88,6 +88,15 @@ import { Store as TauriStore } from "@tauri-apps/plugin-store";
 import { getLocalCreditBalance } from "../lib/localCredits";
 import { signInWithDiscord, signInWithEmail, signInWithGoogle, signUpWithEmail, createCheckout, getBalance } from "../lib/auth";
 import entropicLogo from "../assets/entropic-logo.png";
+import asanaLogo from "../assets/integrations/asana.svg";
+import gmailAssetLogo from "../assets/integrations/gmail.svg";
+import googleCalendarAssetLogo from "../assets/integrations/google-calendar.svg";
+import googleDriveLogo from "../assets/integrations/google-drive.svg";
+import googleSheetsLogo from "../assets/integrations/google-sheets.svg";
+import microsoftTeamsLogo from "../assets/integrations/microsoft-teams.svg";
+import oneDriveLogo from "../assets/integrations/onedrive.svg";
+import outlookLogo from "../assets/integrations/outlook.svg";
+import xAssetLogo from "../assets/integrations/x.svg";
 import type { Page } from "../components/Layout";
 import {
   type Message,
@@ -425,6 +434,14 @@ function XLogo({ className }: { className?: string }) {
       />
     </svg>
   );
+}
+
+function brandAssetLogo(src: string, alt: string): ComponentType<{ className?: string }> {
+  const Logo = ({ className }: { className?: string }) => (
+    <img src={src} alt={alt} className={className} draggable={false} />
+  );
+  Logo.displayName = `BrandAssetLogo(${alt})`;
+  return Logo;
 }
 
 // ── Local chat persistence ─────────────────────────────────────
@@ -1409,14 +1426,38 @@ const QUICK_ACTION_ICONS: Record<ChatQuickActionIcon, typeof Mail> = {
   user: User,
 };
 
+const OneDriveLogo = brandAssetLogo(oneDriveLogo, "OneDrive");
+const OutlookLogo = brandAssetLogo(outlookLogo, "Outlook");
+const GmailAssetLogo = brandAssetLogo(gmailAssetLogo, "Gmail");
+const GoogleCalendarAssetLogo = brandAssetLogo(googleCalendarAssetLogo, "Google Calendar");
+const GoogleDriveLogo = brandAssetLogo(googleDriveLogo, "Google Drive");
+const GoogleSheetsLogo = brandAssetLogo(googleSheetsLogo, "Google Sheets");
+const MicrosoftTeamsLogo = brandAssetLogo(microsoftTeamsLogo, "Microsoft Teams");
+const AsanaLogo = brandAssetLogo(asanaLogo, "Asana");
+const XAssetLogo = brandAssetLogo(xAssetLogo, "X");
+
 const INTEGRATION_LOGOS: Partial<Record<
   IntegrationQuickActionRequirement["provider"],
   ComponentType<{ className?: string }>
 >> = {
   google_email: GmailLogo,
   google_calendar: GoogleCalendarLogo,
+  onedrive: OneDriveLogo,
+  outlook: OutlookLogo,
   x: XLogo,
 };
+
+const HOME_PRIMARY_INTEGRATIONS = [
+  { name: "OneDrive", Logo: OneDriveLogo, size: "large" },
+  { name: "Outlook", Logo: OutlookLogo, size: "large" },
+  { name: "Gmail", Logo: GmailAssetLogo, size: "medium" },
+  { name: "Calendar", Logo: GoogleCalendarAssetLogo, size: "medium" },
+  { name: "Drive", Logo: GoogleDriveLogo, size: "medium" },
+  { name: "Sheets", Logo: GoogleSheetsLogo, size: "medium" },
+  { name: "Teams", Logo: MicrosoftTeamsLogo, size: "medium" },
+  { name: "Asana", Logo: AsanaLogo, size: "small" },
+  { name: "X", Logo: XAssetLogo, size: "small" },
+] as const;
 
 const CRON_GUARD_LINES = [
   "This is a scheduled run. Do NOT create, edit, or run cron jobs.",
@@ -7789,55 +7830,66 @@ export function Chat({
 
   const renderWelcome = () => {
     const userName = onboardingData?.userName || "there";
-    const suggestions = getVisibleQuickActions({
-      telegramConnected: Boolean(channelConfig?.telegramConnected),
-    });
-    const builderSuggestions = suggestions.filter(
-      (suggestion) =>
-        suggestion.id === "build_agent_identity" || suggestion.id === "build_user_profile"
-    );
-    const secondarySuggestions = suggestions
-      .filter((suggestion) => !builderSuggestions.some((builder) => builder.id === suggestion.id))
-      .sort((a, b) => {
-        if (a.id === "inbox_cleanup") return -1;
-        if (b.id === "inbox_cleanup") return 1;
-        return 0;
-      });
+    const integrationRows = [
+      HOME_PRIMARY_INTEGRATIONS.slice(0, 4),
+      HOME_PRIMARY_INTEGRATIONS.slice(4, 8),
+      HOME_PRIMARY_INTEGRATIONS.slice(8, 12),
+    ];
 
     return (
-      <div className="h-full flex flex-col items-center justify-center p-4 text-center animate-fade-in">
-        <div className="max-w-2xl">
-          <h2 className="text-3xl font-semibold mb-2 text-[var(--text-primary)] tracking-tight">
-            Hey {userName}
-          </h2>
-          <p className="text-[var(--text-secondary)] mb-6 text-[15px]">
-            What are we working on?
-          </p>
-          {builderSuggestions.length > 0 && (
-            <div className="flex flex-wrap justify-center gap-2.5 mb-3">
-              {builderSuggestions.map((suggestion, index) => (
-                <SuggestionChip
-                  key={`builder-${index}`}
-                  icon={QUICK_ACTION_ICONS[suggestion.icon]}
-                  label={suggestion.label}
-                  action={{ type: "quick_action", actionId: suggestion.id }}
-                  onClick={handleSuggestionClick}
-                  variant="builder"
-                />
-              ))}
+      <div className="flex h-full flex-col items-center justify-center px-4 py-8 text-center animate-fade-in">
+        <h2 className="mb-16 text-2xl font-semibold tracking-tight text-[var(--text-primary)]">
+          Hey {userName}
+        </h2>
+        <div className="flex w-full max-w-[620px] flex-col items-center gap-9">
+          {integrationRows.map((row, rowIndex) => (
+            <div
+              key={`integration-row-${rowIndex}`}
+              className="flex w-full items-start justify-center gap-7 sm:gap-11"
+            >
+              {row.map(({ name, Logo, size }) => {
+                const large = size === "large";
+                const medium = size === "medium";
+                return (
+                  <button
+                    key={name}
+                    type="button"
+                    onClick={() => onNavigate?.("integrations")}
+                    className="group flex w-[72px] flex-col items-center gap-2 rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--purple-accent)]/25"
+                    aria-label={`Open Integrations to connect ${name}`}
+                    title={`Connect ${name}`}
+                  >
+                    <span
+                      className={clsx(
+                        "inline-flex items-center justify-center rounded-[30%] border border-white/20 bg-[var(--bg-card)]/75 shadow-[0_18px_44px_rgba(15,23,42,0.14)] backdrop-blur-xl transition-all duration-200 ease-out group-hover:-translate-y-1 group-hover:scale-105 group-hover:bg-[var(--bg-card)]",
+                        large
+                          ? "h-[72px] w-[72px]"
+                          : medium
+                            ? "h-[64px] w-[64px]"
+                            : "h-[58px] w-[58px]"
+                      )}
+                    >
+                      <Logo
+                        className={clsx(
+                          "object-contain drop-shadow-sm transition-transform group-hover:scale-105",
+                          large
+                            ? "h-[46px] w-[46px]"
+                            : medium
+                              ? "h-[38px] w-[38px]"
+                              : "h-[32px] w-[32px]"
+                        )}
+                      />
+                    </span>
+                    <span
+                      className="max-w-[76px] truncate text-[10px] font-medium leading-none text-[var(--text-tertiary)] transition-colors group-hover:text-[var(--text-secondary)]"
+                    >
+                      {name}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
-          )}
-          <div className="flex flex-wrap justify-center gap-2.5">
-            {secondarySuggestions.map((suggestion, index) => (
-              <SuggestionChip
-                key={`secondary-${index}`}
-                icon={QUICK_ACTION_ICONS[suggestion.icon]}
-                label={suggestion.label}
-                action={{ type: "quick_action", actionId: suggestion.id }}
-                onClick={handleSuggestionClick}
-              />
-            ))}
-          </div>
+          ))}
         </div>
       </div>
     );

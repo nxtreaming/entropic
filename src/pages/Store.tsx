@@ -20,9 +20,6 @@ import googleDriveLogo from "../assets/integrations/google-drive.svg";
 import googleDocsLogo from "../assets/integrations/google-docs.svg";
 import googleTasksLogo from "../assets/integrations/google-tasks.svg";
 import asanaLogo from "../assets/integrations/asana.svg";
-import slackLogo from "../assets/integrations/slack.svg";
-import githubLogo from "../assets/integrations/github.svg";
-import notionLogo from "../assets/integrations/notion.svg";
 import linearLogo from "../assets/integrations/linear.svg";
 import jiraLogo from "../assets/integrations/jira.svg";
 import salesforceLogo from "../assets/integrations/salesforce.svg";
@@ -316,9 +313,6 @@ const AsanaBrand = brandLogo(asanaLogo, "Asana");
 const MicrosoftTeamsBrand = brandLogo(microsoftTeamsLogo, "Microsoft Teams");
 const OneDriveBrand = brandLogo(onedriveLogo, "OneDrive");
 const OutlookBrand = brandLogo(outlookLogo, "Outlook");
-const SlackBrand = brandLogo(slackLogo, "Slack");
-const NotionBrand = brandLogo(notionLogo, "Notion");
-const GitHubBrand = brandLogo(githubLogo, "GitHub");
 const LinearBrand = brandLogo(linearLogo, "Linear");
 const JiraBrand = brandLogo(jiraLogo, "Jira");
 const SalesforceBrand = brandLogo(salesforceLogo, "Salesforce");
@@ -412,33 +406,6 @@ const COMPOSIO_INTEGRATION_CANDIDATES: OAuthCatalogItem[] = [
     description: "Mail and calendar access through a hosted OAuth broker.",
     icon: OutlookBrand,
     provider: "outlook",
-    status: "available",
-    sourceLabel: COMPOSIO_SOURCE,
-  },
-  {
-    id: "slack_oauth",
-    name: "Slack",
-    description: "Workspace OAuth for channels, search, and message actions.",
-    icon: SlackBrand,
-    provider: "slack",
-    status: "available",
-    sourceLabel: COMPOSIO_SOURCE,
-  },
-  {
-    id: "notion",
-    name: "Notion",
-    description: "OAuth-backed document and database actions.",
-    icon: NotionBrand,
-    provider: "notion",
-    status: "available",
-    sourceLabel: COMPOSIO_SOURCE,
-  },
-  {
-    id: "github",
-    name: "GitHub",
-    description: "Repository, issue, and pull request actions via hosted auth.",
-    icon: GitHubBrand,
-    provider: "github",
     status: "available",
     sourceLabel: COMPOSIO_SOURCE,
   },

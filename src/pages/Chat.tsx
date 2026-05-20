@@ -58,6 +58,7 @@ import {
   getCachedIntegrationProviders,
   getIntegrations,
   connectIntegration,
+  type HostedIntegrationPermissionProfile,
   type IntegrationProvider,
 } from "../lib/integrations";
 import {
@@ -1501,8 +1502,9 @@ type IntegrationSetupState = {
 type IntegrationLaunchState = {
   provider: IntegrationProvider;
   name: string;
-  status: "ready" | "connecting";
+  status: "ready" | "connecting" | "selecting_access";
   error: string | null;
+  permissionProfiles?: HostedIntegrationPermissionProfile[];
 };
 
 type QuickSuggestionState = {
@@ -6681,6 +6683,26 @@ export function Chat({
     return Boolean(entry && entry.connected && !entry.stale);
   }
 
+  async function connectHomeIntegration(
+    sessionKey: string,
+    integration: typeof HOME_PRIMARY_INTEGRATIONS[number],
+    permissionProfile?: string | null
+  ) {
+    setIntegrationLaunchForSession(sessionKey, {
+      provider: integration.provider,
+      name: integration.name,
+      status: "connecting",
+      error: null,
+    });
+    await connectIntegration(integration.provider, { permissionProfile });
+    setIntegrationLaunchForSession(sessionKey, {
+      provider: integration.provider,
+      name: integration.name,
+      status: "connecting",
+      error: `Finish connecting ${integration.name}, then click this icon again.`,
+    });
+  }
+
   async function handleHomeIntegrationClick(integration: typeof HOME_PRIMARY_INTEGRATIONS[number]) {
     const sessionKey = currentSessionRef.current || ensureComposerSession();
     if (!sessionKey) return;
@@ -6698,8 +6720,9 @@ export function Chat({
     });
 
     try {
-      const connectedNow = await isIntegrationReady(integration.provider);
-      if (connectedNow) {
+      const integrations = await getIntegrations({ force: true });
+      const entry = integrations.find((item) => item.provider === integration.provider);
+      if (entry?.connected && !entry.stale) {
         setIntegrationLaunchForSession(sessionKey, {
           provider: integration.provider,
           name: integration.name,
@@ -6710,13 +6733,20 @@ export function Chat({
         return;
       }
 
-      await connectIntegration(integration.provider);
-      setIntegrationLaunchForSession(sessionKey, {
-        provider: integration.provider,
-        name: integration.name,
-        status: "connecting",
-        error: `Finish connecting ${integration.name}, then click this icon again.`,
-      });
+      const configuredProfiles = entry?.permissionProfiles?.filter((profile) => profile.configured) ?? [];
+      if (configuredProfiles.length > 1) {
+        setIntegrationLaunchForSession(sessionKey, {
+          provider: integration.provider,
+          name: integration.name,
+          status: "selecting_access",
+          error: null,
+          permissionProfiles: configuredProfiles,
+        });
+        return;
+      }
+
+      const profile = configuredProfiles.find((item) => item.default) ?? configuredProfiles[0] ?? null;
+      await connectHomeIntegration(sessionKey, integration, profile?.id ?? null);
     } catch (e) {
       const message = e instanceof Error ? e.message : `Failed to connect ${integration.name}.`;
       setIntegrationLaunchForSession(sessionKey, {
@@ -7192,6 +7222,32 @@ export function Chat({
                 <p className="mt-1 text-xs text-[var(--text-secondary)]">
                   Send your next message and I will use {integrationLaunch.name} for it.
                 </p>
+              </>
+            ) : integrationLaunch.status === "selecting_access" ? (
+              <>
+                <p className="mt-3 text-sm font-semibold text-[var(--text-primary)]">
+                  Choose access for {integrationLaunch.name}
+                </p>
+                <div className="mt-3 grid gap-2">
+                  {(integrationLaunch.permissionProfiles ?? []).map((profile) => (
+                    <button
+                      key={profile.id}
+                      type="button"
+                      onClick={() => {
+                        if (!selected || !currentSession) return;
+                        void connectHomeIntegration(currentSession, selected, profile.id);
+                      }}
+                      className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-card)] px-3 py-2 text-left transition-colors hover:border-[var(--purple-accent)]/35 hover:bg-[var(--bg-secondary)]"
+                    >
+                      <span className="block text-xs font-semibold text-[var(--text-primary)]">
+                        {profile.name}
+                      </span>
+                      <span className="mt-0.5 block text-[11px] leading-snug text-[var(--text-secondary)]">
+                        {profile.description}
+                      </span>
+                    </button>
+                  ))}
+                </div>
               </>
             ) : (
               <>

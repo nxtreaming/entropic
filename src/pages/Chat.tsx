@@ -53,6 +53,7 @@ import { TelegramSetupModal } from "../components/TelegramSetupModal";
 import { MarkdownContent } from "../components/MarkdownContent";
 import { AgentAvatar } from "../components/AgentAvatar";
 import { useAuth } from "../contexts/AuthContext";
+import { apiRequest } from "../lib/auth";
 import {
   syncAllIntegrationsToGateway,
   getCachedIntegrationProviders,
@@ -194,6 +195,11 @@ type WorkspaceChatReference = {
   name: string;
   isHtml: boolean;
   looksLikeFile: boolean;
+  cloudSource?: {
+    provider: "onedrive";
+    webUrl?: string;
+    itemPath: string;
+  };
 };
 type DesktopHandoff = {
   path?: string;
@@ -231,6 +237,7 @@ const CHAT_WORKSPACE_PREFIXES = [
 ];
 const CHAT_WORKSPACE_PATH_RE = /((?:\/data\/(?:\.openclaw\/)?workspace|\/home\/node\/\.openclaw\/workspace)(?:\/[^\s`"'<>]+)?)/g;
 const CHAT_OFFICE_FILENAME_RE = /(^|[\s`"'([])([A-Za-z0-9][A-Za-z0-9._-]*\.(?:docx|xlsx|pptx))(?=$|[\s`"')\],:;.!?])/gi;
+const ONEDRIVE_URL_RE = /https:\/\/(?:[^\s`"'<>)]*\.)?(?:onedrive\.live\.com|1drv\.ms)[^\s`"'<>)]*/gi;
 const FINAL_RESPONSE_RECOVERY_RETRY_MS = 1200;
 const FINAL_RESPONSE_RECOVERY_MAX_ATTEMPTS = 2;
 const MAX_VOICE_RESPONSE_SPEECH_CHARS = 1800;
@@ -406,11 +413,31 @@ function buildNoVisibleResponseMessage(params: {
   return "The assistant finished without a visible reply. Retry once; if it keeps happening, check Billing, auth, and network.";
 }
 
+function trimUrlToken(raw: string): string {
+  return raw.replace(/[)\],:;.!?]+$/, "");
+}
+
+function findOneDriveUrlNearFile(content: string, filename: string): string | null {
+  let searchFrom = 0;
+  while (searchFrom < content.length) {
+    const index = content.indexOf(filename, searchFrom);
+    if (index < 0) return null;
+    const nearby = content.slice(index + filename.length, index + filename.length + 900);
+    ONEDRIVE_URL_RE.lastIndex = 0;
+    const match = ONEDRIVE_URL_RE.exec(nearby);
+    if (match?.[0]) {
+      return trimUrlToken(match[0]);
+    }
+    searchFrom = index + filename.length;
+  }
+  return null;
+}
+
 function extractWorkspaceChatReferences(content: string): WorkspaceChatReference[] {
   const refs: WorkspaceChatReference[] = [];
   const seen = new Set<string>();
 
-  const pushReference = (path: string) => {
+  const pushReference = (path: string, cloudSource?: WorkspaceChatReference["cloudSource"]) => {
     const name = workspacePathName(path);
     const ext = name.split(".").pop()?.toLowerCase() || "";
     const ref: WorkspaceChatReference = {
@@ -419,6 +446,7 @@ function extractWorkspaceChatReferences(content: string): WorkspaceChatReference
       name,
       isHtml: ext === "html" || ext === "htm",
       looksLikeFile: Boolean(path) && name.includes("."),
+      ...(cloudSource ? { cloudSource } : {}),
     };
     if (seen.has(ref.key)) return;
     seen.add(ref.key);
@@ -434,7 +462,17 @@ function extractWorkspaceChatReferences(content: string): WorkspaceChatReference
   for (const match of content.matchAll(CHAT_OFFICE_FILENAME_RE)) {
     const filename = trimChatWorkspaceToken(match[2] || "");
     if (!filename || filename.includes("/")) continue;
-    pushReference(filename);
+    const oneDriveUrl = findOneDriveUrlNearFile(content, filename);
+    pushReference(
+      filename,
+      oneDriveUrl
+        ? {
+            provider: "onedrive",
+            webUrl: oneDriveUrl,
+            itemPath: filename,
+          }
+        : undefined
+    );
   }
 
   return refs;
@@ -2044,6 +2082,7 @@ export function Chat({
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [savingWorkspaceImageKeys, setSavingWorkspaceImageKeys] = useState<Record<string, boolean>>({});
   const [savedWorkspaceImagePaths, setSavedWorkspaceImagePaths] = useState<Record<string, string>>({});
+  const [openingOfficeFileKey, setOpeningOfficeFileKey] = useState<string | null>(null);
   const [toolActivityByRunId, setToolActivityByRunId] = useState<Record<string, ChatToolActivity[]>>({});
   const [activeToolRunId, setActiveToolRunId] = useState<string | null>(null);
   const [cancelInFlight, setCancelInFlight] = useState(false);
@@ -7597,6 +7636,100 @@ export function Chat({
     });
   }
 
+  type OneDriveDownloadResponse = {
+    content_base64?: string | null;
+    too_large?: boolean;
+    max_bytes?: number;
+    size_bytes?: number | null;
+    item?: {
+      id?: string | null;
+      name?: string | null;
+    };
+  };
+
+  type OneDriveSearchResponse = {
+    items?: Array<{
+      id?: string | null;
+      name?: string | null;
+      file?: unknown;
+    }>;
+  };
+
+  async function executeOneDriveAction<T>(action: string, params: Record<string, unknown>): Promise<T> {
+    return apiRequest<T>("/integrations/onedrive/execute", {
+      method: "POST",
+      body: JSON.stringify({ action, params }),
+    });
+  }
+
+  async function downloadOneDriveOfficeFile(ref: WorkspaceChatReference): Promise<void> {
+    if (ref.cloudSource?.provider !== "onedrive") return;
+    const maxBytes = 20 * 1024 * 1024;
+    let download: OneDriveDownloadResponse | null = null;
+    try {
+      download = await executeOneDriveAction<OneDriveDownloadResponse>("download_item", {
+        path: ref.cloudSource.itemPath || ref.name,
+        maxBytes,
+      });
+    } catch (pathError) {
+      const search = await executeOneDriveAction<OneDriveSearchResponse>("search_items", {
+        query: ref.name,
+        limit: 10,
+      });
+      const match = search.items?.find((item) => item.file && item.name === ref.name) ??
+        search.items?.find((item) => item.file && item.name?.toLowerCase() === ref.name.toLowerCase());
+      if (!match?.id) {
+        throw pathError;
+      }
+      download = await executeOneDriveAction<OneDriveDownloadResponse>("download_item", {
+        itemId: match.id,
+        maxBytes,
+      });
+    }
+
+    if (!download?.content_base64) {
+      if (download?.too_large) {
+        const sizeMb = download.size_bytes ? (download.size_bytes / (1024 * 1024)).toFixed(1) : null;
+        const maxMb = download.max_bytes ? Math.round(download.max_bytes / (1024 * 1024)) : 20;
+        throw new Error(
+          `OneDrive file is too large to open locally${sizeMb ? ` (${sizeMb} MB)` : ""}. Limit is ${maxMb} MB.`
+        );
+      }
+      throw new Error("OneDrive did not return downloadable file content.");
+    }
+
+    await invoke("upload_workspace_file", {
+      fileName: download.item?.name || ref.name,
+      base64: download.content_base64,
+      destPath: "",
+    });
+  }
+
+  async function openOfficeReference(ref: WorkspaceChatReference) {
+    setOpeningOfficeFileKey(ref.key);
+    setError(null);
+    try {
+      if (ref.cloudSource?.provider === "onedrive") {
+        await downloadOneDriveOfficeFile(ref);
+      }
+      await handoffWorkspacePathToDesktop({
+        path: ref.path,
+        action: "open",
+        looksLikeFile: true,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(`Failed to open ${ref.name}: ${message}`);
+      clientLog("office.open_from_chat.failed", {
+        path: ref.path,
+        provider: ref.cloudSource?.provider ?? "workspace",
+        error: message,
+      });
+    } finally {
+      setOpeningOfficeFileKey((current) => current === ref.key ? null : current);
+    }
+  }
+
   function renderOfficeWorkspaceOpenCards(content: string) {
     const seenOfficePaths = new Set<string>();
     const officeRefs = extractWorkspaceChatReferences(content)
@@ -7618,18 +7751,16 @@ export function Chat({
         </div>
         {officeRefs.map(({ ref, meta }) => {
           const Icon = meta.Icon;
-          const openFile = () => {
-            void handoffWorkspacePathToDesktop({
-              path: ref.path,
-              action: "open",
-              looksLikeFile: true,
-            });
-          };
+          const isOpening = openingOfficeFileKey === ref.key;
+          const opensFromOneDrive = ref.cloudSource?.provider === "onedrive";
           return (
             <button
               type="button"
               key={`office-open-${ref.key}`}
-              onClick={openFile}
+              onClick={() => {
+                void openOfficeReference(ref);
+              }}
+              disabled={isOpening}
               className="group flex w-full min-w-0 cursor-pointer items-center gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-tertiary)]/75 px-3 py-3 text-left shadow-sm transition-all hover:-translate-y-px hover:border-[var(--purple-accent)]/35 hover:bg-[var(--bg-card)] hover:shadow-md focus:outline-none focus:ring-2 focus:ring-[var(--purple-accent)]/20"
               title={`Open ${ref.name} in OnlyOffice`}
               aria-label={`Open ${ref.name} in OnlyOffice`}
@@ -7647,12 +7778,14 @@ export function Chat({
                 </div>
                 <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-[var(--text-secondary)]">
                   <span>{meta.label}</span>
-                  <span className="text-[var(--text-tertiary)]">Opens in OnlyOffice {meta.appLabel}</span>
+                  <span className="text-[var(--text-tertiary)]">
+                    {opensFromOneDrive ? `Downloads from OneDrive, then opens in OnlyOffice ${meta.appLabel}` : `Opens in OnlyOffice ${meta.appLabel}`}
+                  </span>
                 </div>
               </div>
               <span className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-[var(--text-primary)] px-3 py-2 text-xs font-semibold text-[var(--bg-primary)] shadow-sm transition-transform group-hover:-translate-y-px">
-                <Icon className="h-3.5 w-3.5" />
-                <span>Open in OnlyOffice</span>
+                {isOpening ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Icon className="h-3.5 w-3.5" />}
+                <span>{isOpening ? "Opening..." : "Open in OnlyOffice"}</span>
               </span>
             </button>
           );

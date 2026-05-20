@@ -356,19 +356,19 @@ function workspacePathExtension(path: string): string {
 }
 
 function officeWorkspaceFileMeta(path: string):
-  | { kind: "docs"; label: "Docs"; Icon: ComponentType<{ className?: string }>; accent: string }
-  | { kind: "sheets"; label: "Sheets"; Icon: ComponentType<{ className?: string }>; accent: string }
-  | { kind: "slides"; label: "Slides"; Icon: ComponentType<{ className?: string }>; accent: string }
+  | { kind: "docs"; label: "Word document"; appLabel: "Docs"; Icon: ComponentType<{ className?: string }>; accent: string }
+  | { kind: "sheets"; label: "Excel workbook"; appLabel: "Sheets"; Icon: ComponentType<{ className?: string }>; accent: string }
+  | { kind: "slides"; label: "PowerPoint presentation"; appLabel: "Slides"; Icon: ComponentType<{ className?: string }>; accent: string }
   | null {
   const ext = workspacePathExtension(path);
   if (ext === "docx") {
-    return { kind: "docs", label: "Docs", Icon: FileText, accent: "#2563EB" };
+    return { kind: "docs", label: "Word document", appLabel: "Docs", Icon: FileText, accent: "#2563EB" };
   }
   if (ext === "xlsx") {
-    return { kind: "sheets", label: "Sheets", Icon: FileSpreadsheet, accent: "#16A34A" };
+    return { kind: "sheets", label: "Excel workbook", appLabel: "Sheets", Icon: FileSpreadsheet, accent: "#16A34A" };
   }
   if (ext === "pptx") {
-    return { kind: "slides", label: "Slides", Icon: Presentation, accent: "#EA580C" };
+    return { kind: "slides", label: "PowerPoint presentation", appLabel: "Slides", Icon: Presentation, accent: "#EA580C" };
   }
   return null;
 }
@@ -2537,6 +2537,8 @@ export function Chat({
   }
 
   function renderPendingAttachmentPreview(attachment: PendingAttachment) {
+    const officeMeta = officeWorkspaceFileMeta(attachment.fileName);
+    const OfficeIcon = officeMeta?.Icon;
     if (attachment.mimeType.startsWith("image/") && attachment.previewUrl) {
       return (
         <img
@@ -2554,8 +2556,11 @@ export function Chat({
       );
     }
     return (
-      <div className="flex h-8 w-8 items-center justify-center rounded bg-[var(--bg-secondary)] text-[var(--text-secondary)]">
-        <FileText className="h-4 w-4" />
+      <div
+        className="flex h-8 w-8 items-center justify-center rounded bg-[var(--bg-secondary)] text-[var(--text-secondary)]"
+        style={officeMeta ? { color: officeMeta.accent } : undefined}
+      >
+        {OfficeIcon ? <OfficeIcon className="h-4 w-4" /> : <FileText className="h-4 w-4" />}
       </div>
     );
   }
@@ -7516,54 +7521,63 @@ export function Chat({
   }
 
   function renderOfficeWorkspaceOpenCards(content: string) {
+    const seenOfficePaths = new Set<string>();
     const officeRefs = extractWorkspaceChatReferences(content)
       .map((ref) => ({ ref, meta: officeWorkspaceFileMeta(ref.path) }))
       .filter((item): item is { ref: WorkspaceChatReference; meta: NonNullable<ReturnType<typeof officeWorkspaceFileMeta>> } =>
         Boolean(item.meta)
-      );
+      )
+      .filter(({ ref }) => {
+        if (seenOfficePaths.has(ref.path)) return false;
+        seenOfficePaths.add(ref.path);
+        return true;
+      });
     if (officeRefs.length === 0) return null;
 
     return (
       <div className="mt-3 space-y-2">
+        <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-tertiary)]/55 px-3 py-2 text-xs text-[var(--text-secondary)]">
+          Word, Excel, and PowerPoint files open directly in OnlyOffice. Click a file card below.
+        </div>
         {officeRefs.map(({ ref, meta }) => {
           const Icon = meta.Icon;
+          const openFile = () => {
+            void handoffWorkspacePathToDesktop({
+              path: ref.path,
+              action: "open",
+              looksLikeFile: true,
+            });
+          };
           return (
-            <div
+            <button
+              type="button"
               key={`office-open-${ref.key}`}
-              className="flex min-w-0 items-center gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-tertiary)]/75 px-3 py-3"
+              onClick={openFile}
+              className="group flex w-full min-w-0 cursor-pointer items-center gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-tertiary)]/75 px-3 py-3 text-left shadow-sm transition-all hover:-translate-y-px hover:border-[var(--purple-accent)]/35 hover:bg-[var(--bg-card)] hover:shadow-md focus:outline-none focus:ring-2 focus:ring-[var(--purple-accent)]/20"
+              title={`Open ${ref.name} in OnlyOffice`}
+              aria-label={`Open ${ref.name} in OnlyOffice`}
             >
               <div
-                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[var(--bg-card)] shadow-sm"
+                className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-[var(--bg-card)] shadow-sm ring-1 ring-black/5"
                 style={{ color: meta.accent }}
                 aria-hidden="true"
               >
-                <Icon className="h-6 w-6" />
+                <Icon className="h-7 w-7" />
               </div>
               <div className="min-w-0 flex-1">
-                <div className="truncate text-sm font-medium text-[var(--text-primary)]" title={ref.name}>
+                <div className="truncate text-sm font-semibold text-[var(--text-primary)]" title={ref.name}>
                   {ref.name}
                 </div>
-                <div className="mt-0.5 text-xs text-[var(--text-secondary)]">
-                  Do you want to open it in {meta.label}?
+                <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-[var(--text-secondary)]">
+                  <span>{meta.label}</span>
+                  <span className="text-[var(--text-tertiary)]">Opens in OnlyOffice {meta.appLabel}</span>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  void handoffWorkspacePathToDesktop({
-                    path: ref.path,
-                    action: "open",
-                    looksLikeFile: true,
-                  });
-                }}
-                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-[var(--text-primary)] px-3 py-2 text-xs font-medium text-[var(--bg-primary)] shadow-sm transition-transform hover:-translate-y-px"
-                title={`Open ${ref.name}`}
-                aria-label={`Open ${ref.name}`}
-              >
+              <span className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-[var(--text-primary)] px-3 py-2 text-xs font-semibold text-[var(--bg-primary)] shadow-sm transition-transform group-hover:-translate-y-px">
                 <Icon className="h-3.5 w-3.5" />
-                <span>Open</span>
-              </button>
-            </div>
+                <span>Open in OnlyOffice</span>
+              </span>
+            </button>
           );
         })}
       </div>
@@ -8805,29 +8819,32 @@ export function Chat({
           <div className="rounded-[26px] border border-[var(--border-subtle)] bg-[var(--bg-card)] p-2 shadow-[0_12px_36px_rgba(15,23,42,0.12)] transition-colors">
             {pendingAttachments.length > 0 && (
               <div className="mb-2 flex flex-wrap gap-2 px-1 pt-1">
-                {pendingAttachments.map((attachment) => (
-                  <div
-                    key={attachment.id}
-                    className="flex min-w-0 items-center gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-tertiary)] px-2 py-1.5"
-                  >
-                    {renderPendingAttachmentPreview(attachment)}
-                    <div className="min-w-0">
-                      <div className="max-w-[180px] truncate text-xs text-[var(--text-secondary)]">
-                        {attachment.fileName}
-                      </div>
-                      <div className="text-[10px] uppercase tracking-wide text-[var(--text-tertiary)]">
-                        {attachmentKindLabel(attachment.mimeType)}
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => removePendingAttachment(attachment.id)}
-                      className="p-0.5 text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
-                      aria-label={`Remove ${attachment.fileName}`}
+                {pendingAttachments.map((attachment) => {
+                  const officeMeta = officeWorkspaceFileMeta(attachment.fileName);
+                  return (
+                    <div
+                      key={attachment.id}
+                      className="flex min-w-0 items-center gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-tertiary)] px-2 py-1.5"
                     >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                ))}
+                      {renderPendingAttachmentPreview(attachment)}
+                      <div className="min-w-0">
+                        <div className="max-w-[180px] truncate text-xs text-[var(--text-secondary)]">
+                          {attachment.fileName}
+                        </div>
+                        <div className="text-[10px] uppercase tracking-wide text-[var(--text-tertiary)]">
+                          {officeMeta ? `${officeMeta.label} · OnlyOffice ready` : attachmentKindLabel(attachment.mimeType)}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => removePendingAttachment(attachment.id)}
+                        className="p-0.5 text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
+                        aria-label={`Remove ${attachment.fileName}`}
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             )}
             <div className="flex items-end gap-1.5">

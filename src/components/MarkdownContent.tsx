@@ -1,8 +1,8 @@
-import { memo, type ReactNode } from "react";
+import { memo, type ComponentType, type ReactNode } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
-import { FolderOpen, Globe } from "lucide-react";
+import { FileSpreadsheet, FileText, FolderOpen, Globe, Presentation } from "lucide-react";
 
 type WorkspaceLinkAction = {
   path: string;
@@ -22,7 +22,8 @@ const CHAT_WORKSPACE_PREFIXES = [
 ];
 const LOCAL_BROWSER_HOSTS = new Set(["container.localhost", "runtime.localhost", "localhost", "127.0.0.1"]);
 const WORKSPACE_LINK_SCHEME = "entropic-workspace://";
-const BROWSER_WORKSPACE_EXTS = new Set(["html", "htm", "xlsx", "docx", "pptx"]);
+const BROWSER_WORKSPACE_EXTS = new Set(["html", "htm"]);
+const OFFICE_WORKSPACE_EXTS = new Set(["xlsx", "docx", "pptx"]);
 const DESKTOP_LINK_TOKEN_RE = new RegExp(
   `((?:\\/data\\/(?:\\.openclaw\\/)?workspace|\\/home\\/node\\/\\.openclaw\\/workspace)(?:\\/[^\\s\`"'<>]+)?|(?:https?:\\/\\/)?(?:container\\.localhost|runtime\\.localhost|localhost|127\\.0\\.0\\.1)(?::\\d+)?(?:[/?#][^\\s\`"'<>]*)?)`,
   "gi",
@@ -63,6 +64,22 @@ function resolveWorkspaceChip(raw: string): WorkspaceChip | null {
     action: BROWSER_WORKSPACE_EXTS.has(ext) ? "browser" : "open",
     label: core,
   };
+}
+
+function workspaceFileName(path: string): string {
+  return path.split("/").filter(Boolean).pop() || "Workspace file";
+}
+
+function officeChipMeta(path: string): { Icon: ComponentType<{ className?: string }>; label: string; accent: string } | null {
+  const ext = workspaceFileName(path).split(".").pop()?.toLowerCase() || "";
+  if (!OFFICE_WORKSPACE_EXTS.has(ext)) return null;
+  if (ext === "xlsx") {
+    return { Icon: FileSpreadsheet, label: "Excel workbook", accent: "#16A34A" };
+  }
+  if (ext === "pptx") {
+    return { Icon: Presentation, label: "PowerPoint presentation", accent: "#EA580C" };
+  }
+  return { Icon: FileText, label: "Word document", accent: "#2563EB" };
 }
 
 function resolveBrowserUrlChip(raw: string): WorkspaceChip | null {
@@ -196,7 +213,9 @@ function renderWorkspaceChip(
   onWorkspaceLinkClick?: (action: WorkspaceLinkAction) => void,
 ) {
   const isBrowser = workspaceAction.action === "browser";
-  const Icon = isBrowser ? Globe : FolderOpen;
+  const officeMeta = officeChipMeta(workspaceAction.path);
+  const Icon = officeMeta?.Icon ?? (isBrowser ? Globe : FolderOpen);
+  const accent = officeMeta?.accent ?? "var(--chat-link-accent)";
   return (
     <a
       href={`${WORKSPACE_LINK_SCHEME}${workspaceAction.action}?path=${encodeURIComponent(workspaceAction.path)}&file=${workspaceAction.looksLikeFile ? "1" : "0"}${workspaceAction.url ? `&url=${encodeURIComponent(workspaceAction.url)}` : ""}`}
@@ -205,9 +224,9 @@ function renderWorkspaceChip(
         display: "inline-flex",
         alignItems: "center",
         gap: "0.5rem",
-        borderColor: "color-mix(in srgb, var(--chat-link-accent) 42%, transparent)",
-        background: "color-mix(in srgb, var(--chat-link-accent) 12%, transparent)",
-        color: "var(--chat-link-accent)",
+        borderColor: `color-mix(in srgb, ${accent} 42%, transparent)`,
+        background: `color-mix(in srgb, ${accent} 12%, transparent)`,
+        color: accent,
         textDecoration: "none",
         verticalAlign: "middle",
       }}
@@ -219,13 +238,20 @@ function renderWorkspaceChip(
       <span
         className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full"
         style={{
-          background: "color-mix(in srgb, var(--chat-link-accent) 18%, transparent)",
-          color: "var(--chat-link-accent)",
+          background: `color-mix(in srgb, ${accent} 18%, transparent)`,
+          color: accent,
         }}
       >
         <Icon className="h-3 w-3" />
       </span>
-      <span className="min-w-0 truncate font-mono">{label}</span>
+      <span className={officeMeta ? "min-w-0 truncate" : "min-w-0 truncate font-mono"}>
+        {officeMeta ? workspaceFileName(workspaceAction.path) : label}
+      </span>
+      {officeMeta ? (
+        <span className="hidden shrink-0 text-[10px] font-bold uppercase tracking-wide opacity-75 sm:inline">
+          Open in OnlyOffice
+        </span>
+      ) : null}
     </a>
   );
 }
